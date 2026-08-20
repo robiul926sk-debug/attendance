@@ -253,48 +253,54 @@ app.delete('/api/active_rooms/:roomId', async (req, res) => {
 });
 
 // --- Room Sub-collections (Participants, Questions, Signaling, Chat) ---
-app.route('/api/active_rooms/:roomId/:subCollection/:subDocId?')
-  .get(async (req, res) => {
-    try {
-      const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
-      if (req.params.subDocId) {
-        const data = await Model.findOne({ docId: req.params.subDocId });
-        res.json(data || {});
-      } else {
-        const data = await Model.find(req.query);
-        res.json(data.map(d => ({ id: d.docId || d._id.toString(), ...d._doc })));
-      }
-    } catch (err) { res.status(500).json({ error: err.message }); }
-  })
-  .post(async (req, res) => {
-    try {
-      const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
-      const newDoc = new Model({ ...req.body, docId: req.body.id || req.body.roomId });
-      await newDoc.save();
-      res.status(201).json({ success: true, id: newDoc._id.toString() });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-  })
-  .put(async (req, res) => {
-    try {
-      const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
-      const updated = await Model.findOneAndUpdate({ docId: req.params.subDocId }, { ...req.body, docId: req.params.subDocId }, { new: true, upsert: true });
-      res.json(updated);
-    } catch (err) { res.status(500).json({ error: err.message }); }
-  })
-  .patch(async (req, res) => {
-    try {
-      const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
-      const updated = await Model.findOneAndUpdate({ docId: req.params.subDocId }, { $set: req.body }, { new: true });
-      res.json(updated || {});
-    } catch (err) { res.status(500).json({ error: err.message }); }
-  })
-  .delete(async (req, res) => {
-    try {
-      const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
-      await Model.findOneAndDelete({ docId: req.params.subDocId });
-      res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-  });
+app.get('/api/active_rooms/:roomId/:subCollection', async (req, res) => {
+  try {
+    const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
+    const data = await Model.find(req.query);
+    res.json(data.map(d => ({ id: d.docId || d._id.toString(), ...d._doc })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
+  try {
+    const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
+    const data = await Model.findOne({ docId: req.params.subDocId });
+    res.json(data || {});
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/active_rooms/:roomId/:subCollection', async (req, res) => {
+  try {
+    const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
+    const newDoc = new Model({ ...req.body, docId: req.body.id || req.body.roomId });
+    await newDoc.save();
+    res.status(201).json({ success: true, id: newDoc._id.toString() });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
+  try {
+    const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
+    const updated = await Model.findOneAndUpdate({ docId: req.params.subDocId }, { ...req.body, docId: req.params.subDocId }, { new: true, upsert: true });
+    res.json(updated);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
+  try {
+    const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
+    const updated = await Model.findOneAndUpdate({ docId: req.params.subDocId }, { $set: req.body }, { new: true });
+    res.json(updated || {});
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
+  try {
+    const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
+    await Model.findOneAndDelete({ docId: req.params.subDocId });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // ==========================================
 // 🟢 Global Developer Feedbacks (Without UID in path)
