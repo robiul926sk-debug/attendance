@@ -17,10 +17,19 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ==========================================
-// 🟢 2. MongoDB Cloud Connection
+// 🟢 2. MongoDB Cloud Connection (WITH FIREBASE MAGIC)
 // ==========================================
 mongoose.connect('mongodb+srv://robiul926sk_db_user:X35cF8uk3qXGabH8@cluster0.axgj0zh.mongodb.net/greenland_school_db?appName=Cluster0')
-  .then(() => console.log("✅ MongoDB Cloud Connected Successfully!"))
+  .then(() => {
+    console.log("✅ MongoDB Cloud Connected Successfully!");
+
+    // 🟢 ফায়ারবেসের মতো ম্যাজিক: ডাটাবেস ড্যাশবোর্ড থেকে কিছু চেঞ্জ করলে সরাসরি অ্যাপে সিগন্যাল যাবে
+    School.watch([], { fullDocument: 'updateLookup' }).on('change', (change) => {
+      if (change.fullDocument && change.fullDocument.uid) {
+        io.to(change.fullDocument.uid).emit('data_updated', { type: 'school_data' });
+      }
+    });
+  })
   .catch((err) => console.log("❌ DB Connection Error:", err));
 
 // ==========================================
@@ -38,7 +47,6 @@ io.on('connection', (socket) => {
     console.log(`User joined room: ${roomId}`);
   });
 
-  // 🟢 ম্যাজিক: ইউজার তার স্কুল আইডির রুমে জয়েন করবে, যাতে ডাটাবেস চেঞ্জ হলে সাথে সাথে সিগন্যাল পায়
   socket.on('join_school_room', (schoolId) => { 
     socket.join(schoolId); 
     console.log(`User joined school room for live sync: ${schoolId}`);
@@ -61,7 +69,7 @@ const IV_LENGTH = 16;
 
 function encryptData(text) {
   if (!text) return text;
-  if (text.includes(':') && text.length > 32) return text; // আগে থেকেই এনক্রিপ্ট করা থাকলে স্কিপ করবে
+  if (text.includes(':') && text.length > 32) return text; 
   
   let iv = crypto.randomBytes(IV_LENGTH);
   let cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY), iv);
@@ -70,7 +78,6 @@ function encryptData(text) {
   return iv.toString('hex') + ':' + encrypted.toString('hex');
 }
 
-// 🟢 ম্যাজিক ফিক্স: ডিক্রিপশন ফাংশন (যাতে ফ্লাটার অ্যাপ আসল ডেটা দেখতে পায়)
 function decryptData(text) {
   if (!text || !text.includes(':')) return text;
   try {
@@ -82,12 +89,12 @@ function decryptData(text) {
     decrypted = Buffer.concat([decrypted, decipher.final()]);
     return decrypted.toString();
   } catch (error) {
-    return text; // ডিক্রিপ্ট করতে না পারলে অরিজিনালটাই রিটার্ন করবে
+    return text; 
   }
 }
 
 // ==========================================
-// 🟢 5. Models (strict: false থাকার জন্য অটোমেটিক ফিল্ড/বক্স তৈরি হবে)
+// 🟢 5. Models 
 // ==========================================
 const schoolSchema = new mongoose.Schema({ uid: String }, { strict: false });
 const School = mongoose.model('School', schoolSchema);
@@ -121,10 +128,17 @@ app.get('/api/users/:uid', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// 🔹 School Data Update (With CUSTOM END DATE Logic)
 app.put('/api/users/:uid', async (req, res) => {
   try {
     let updateData = { ...req.body };
-    if (updateData.currentPlan) {
+    
+    // 🟢 ম্যাজিক ফিক্স: যদি ১০০ দিনের কাস্টম ডেট বা ম্যানুয়াল ডেট পাঠানো হয়
+    if (updateData.end_date) {
+      updateData.end_date = Number(updateData.end_date);
+    } 
+    // নতুবা যদি শুধু প্ল্যানের নাম পাঠানো হয়, তখন অটোমেটিক ক্যালকুলেট করবে
+    else if (updateData.currentPlan) {
       let planName = updateData.currentPlan.toLowerCase();
       let addedDays = 30; 
       if (planName.includes("7 days") || planName.includes("week") || planName.includes("49")) addedDays = 7;
@@ -147,7 +161,11 @@ app.put('/api/users/:uid', async (req, res) => {
 app.patch('/api/users/:uid', async (req, res) => {
   try {
     let updateData = { ...req.body };
-    if (updateData.currentPlan) {
+    
+    // 🟢 ম্যাজিক ফিক্স: ম্যানুয়াল ডেট প্রায়োরিটি পাবে
+    if (updateData.end_date) {
+      updateData.end_date = Number(updateData.end_date);
+    } else if (updateData.currentPlan) {
       let planName = updateData.currentPlan.toLowerCase();
       let addedDays = 30; 
       if (planName.includes("7 days") || planName.includes("week") || planName.includes("49")) addedDays = 7;
@@ -164,7 +182,7 @@ app.patch('/api/users/:uid', async (req, res) => {
 
 
 // ==========================================
-// 🟢 7. MASTER LOGIN API (WITH CUSTOM STUDENT ID FIX)
+// 🟢 7. MASTER LOGIN API 
 // ==========================================
 app.post('/api/login', async (req, res) => {
   try {
@@ -178,7 +196,6 @@ app.post('/api/login', async (req, res) => {
     }
 
     if (role === "student") {
-      // 🟢 কাস্টম ইউজার আইডি লজিক (যেমন: Nasrin 05 -> nas05)
       const allStudents = await Student.find({ schoolId: schoolId });
       
       const student = allStudents.find(s => {
@@ -211,7 +228,7 @@ app.post('/api/login', async (req, res) => {
 
 
 // ==========================================
-// 🟢 8. Dynamic Firebase-like Routing Engine (With Encryption & Sync)
+// 🟢 8. Dynamic Firebase-like Routing Engine
 // ==========================================
 const getDynamicModel = (collectionName) => {
   if (mongoose.models[collectionName]) return mongoose.models[collectionName];
@@ -327,7 +344,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
   });
 
 // ==========================================
-// 🟢 9. Active Rooms (Live Exam & WebRTC) - Fixed PathError
+// 🟢 9. Active Rooms (Live Exam & WebRTC)
 // ==========================================
 const ActiveRoom = getDynamicModel('active_rooms');
 
