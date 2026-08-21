@@ -17,7 +17,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ==========================================
-// 🟢 2. MongoDB Cloud Connection (WITH FIREBASE MAGIC)
+// 🟢 2. MongoDB Cloud Connection
 // ==========================================
 mongoose.connect('mongodb+srv://robiul926sk_db_user:X35cF8uk3qXGabH8@cluster0.axgj0zh.mongodb.net/greenland_school_db?appName=Cluster0')
   .then(() => {
@@ -128,23 +128,50 @@ app.get('/api/users/:uid', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🔹 School Data Update (With CUSTOM END DATE Logic)
+// 🔹 Date calculation helper (মানুষের পড়ার মতো ডেট এবং সার্কেল লজিক)
+async function calculateReadableEndDate(uid, updateData) {
+  // ১. যদি আপনি হাত দিয়ে কোনো ডেট পাঠান (যেমন: "2026-12-31") বা ফ্লাটার থেকে কোনো ডেট আসে
+  if (updateData.end_date) {
+    let parsedDate = new Date(updateData.end_date);
+    if (!isNaN(parsedDate)) {
+      return parsedDate.toISOString(); // সব সময় মানুষের পড়ার মতো (ISO) স্ট্রিং সেভ হবে
+    }
+  }
+
+  // ২. যদি প্ল্যান রিচার্জ করা হয়, তবে সার্কেল লজিক কাজ করবে
+  if (updateData.currentPlan) {
+    let planName = updateData.currentPlan.toLowerCase();
+    let addedDays = 30; 
+    if (planName.includes("7 days") || planName.includes("week") || planName.includes("49")) addedDays = 7;
+    if (planName.includes("3 months")) addedDays = 90;
+    if (planName.includes("1 year") || planName.includes("1499")) addedDays = 365;
+
+    // ইউজারের আগের ডেটাবেস চেক করা
+    const currentSchool = await School.findOne({ uid: uid });
+    let baseDate = new Date(); // আজকের ডেট
+
+    if (currentSchool && currentSchool.end_date) {
+      let existingDate = new Date(currentSchool.end_date);
+      // যদি ইউজারের আগের প্ল্যান এখনো বাকি থাকে, তবে আজকের ডেটের বদলে সেই ডেটের সাথে যোগ হবে
+      if (!isNaN(existingDate) && existingDate > baseDate) {
+        baseDate = existingDate; 
+      }
+    }
+
+    baseDate.setDate(baseDate.getDate() + addedDays);
+    return baseDate.toISOString(); // যেমন: "2026-09-28T12:00:00.000Z"
+  }
+
+  return updateData.end_date;
+}
+
 app.put('/api/users/:uid', async (req, res) => {
   try {
     let updateData = { ...req.body };
     
-    // 🟢 ম্যাজিক ফিক্স: যদি ১০০ দিনের কাস্টম ডেট বা ম্যানুয়াল ডেট পাঠানো হয়
-    if (updateData.end_date) {
-      updateData.end_date = Number(updateData.end_date);
-    } 
-    // নতুবা যদি শুধু প্ল্যানের নাম পাঠানো হয়, তখন অটোমেটিক ক্যালকুলেট করবে
-    else if (updateData.currentPlan) {
-      let planName = updateData.currentPlan.toLowerCase();
-      let addedDays = 30; 
-      if (planName.includes("7 days") || planName.includes("week") || planName.includes("49")) addedDays = 7;
-      if (planName.includes("3 months")) addedDays = 90;
-      if (planName.includes("1 year") || planName.includes("1499")) addedDays = 365;
-      updateData.end_date = Date.now() + (addedDays * 24 * 60 * 60 * 1000);
+    // 🟢 ম্যাজিক ফিক্স: মানুষের পড়ার মতো ডেট এবং সার্কেল লজিক
+    if (updateData.end_date || updateData.currentPlan) {
+      updateData.end_date = await calculateReadableEndDate(req.params.uid, updateData);
     }
 
     const updated = await School.findOneAndUpdate(
@@ -162,16 +189,9 @@ app.patch('/api/users/:uid', async (req, res) => {
   try {
     let updateData = { ...req.body };
     
-    // 🟢 ম্যাজিক ফিক্স: ম্যানুয়াল ডেট প্রায়োরিটি পাবে
-    if (updateData.end_date) {
-      updateData.end_date = Number(updateData.end_date);
-    } else if (updateData.currentPlan) {
-      let planName = updateData.currentPlan.toLowerCase();
-      let addedDays = 30; 
-      if (planName.includes("7 days") || planName.includes("week") || planName.includes("49")) addedDays = 7;
-      if (planName.includes("3 months")) addedDays = 90;
-      if (planName.includes("1 year") || planName.includes("1499")) addedDays = 365;
-      updateData.end_date = Date.now() + (addedDays * 24 * 60 * 60 * 1000);
+    // 🟢 ম্যাজিক ফিক্স: মানুষের পড়ার মতো ডেট এবং সার্কেল লজিক
+    if (updateData.end_date || updateData.currentPlan) {
+      updateData.end_date = await calculateReadableEndDate(req.params.uid, updateData);
     }
 
     const updated = await School.findOneAndUpdate({ uid: req.params.uid }, { $set: updateData }, { new: true, upsert: true });
