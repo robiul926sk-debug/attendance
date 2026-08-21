@@ -13,7 +13,7 @@ const server = http.createServer(app);
 // 🟢 1. Middleware Setup
 // ==========================================
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // বড় ছবি বা ফাইল রিসিভ করার জন্য
+app.use(express.json({ limit: '50mb' })); 
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ==========================================
@@ -24,7 +24,7 @@ mongoose.connect('mongodb+srv://robiul926sk_db_user:X35cF8uk3qXGabH8@cluster0.ax
   .catch((err) => console.log("❌ DB Connection Error:", err));
 
 // ==========================================
-// 🟢 3. Socket.io Setup (For Live Calls & WebRTC)
+// 🟢 3. Socket.io Setup
 // ==========================================
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] }
@@ -53,9 +53,9 @@ function encryptData(text) {
 }
 
 // ==========================================
-// 🟢 5. Auth & Login Routes (Specific)
+// 🟢 5. Models for Login
 // ==========================================
-const schoolSchema = new mongoose.Schema({ uid: String, schoolName: String, password: String }, { strict: false });
+const schoolSchema = new mongoose.Schema({ uid: String, schoolName: String, password: String, email: String, phone: String }, { strict: false });
 const School = mongoose.model('School', schoolSchema);
 
 const studentSchema = new mongoose.Schema({ schoolId: String, docId: String, password: String, loginEnabled: Boolean }, { strict: false });
@@ -64,55 +64,40 @@ const Student = mongoose.model('Student', studentSchema, 'students');
 const teacherSchema = new mongoose.Schema({ schoolId: String, docId: String, password: String, loginEnabled: Boolean }, { strict: false });
 const Teacher = mongoose.model('Teacher', teacherSchema, 'teachers');
 
-app.post('/api/login', async (req, res) => {
+
+// ==========================================
+// 🟢 6. ADMIN & USER CHECKING (THE BUG FIX IS HERE)
+// ==========================================
+
+// 🔹 ফ্লাটার যখন ইমেইল বা ফোন দিয়ে চেক করবে (For Duplicate Check)
+app.get('/api/users', async (req, res) => {
   try {
-    const { role, schoolId, userId, password } = req.body;
-
-    if (role === "admin") {
-      const school = await School.findOne({ uid: userId });
-      if (!school) return res.status(404).json({ error: "Admin ID not found!" });
-      const isMatch = await bcrypt.compare(password, school.password);
-      if (!isMatch) return res.status(400).json({ error: "Invalid Password!" });
-      return res.json({ success: true, data: school });
-    }
-
-    if (role === "student") {
-      const student = await Student.findOne({ schoolId: schoolId, docId: `student_${userId}` });
-      if (!student) return res.status(404).json({ error: "Student not found!" });
-      if (student.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
-      // Demo validation without bcrypt for quick test, you can add bcrypt later
-      if (password !== student.password && !(await bcrypt.compare(password, student.password))) return res.status(400).json({ error: "Invalid Password!" });
-      return res.json({ success: true, data: student });
-    }
-
-    if (role === "teacher") {
-      const teacher = await Teacher.findOne({ schoolId: schoolId, docId: userId });
-      if (!teacher) return res.status(404).json({ error: "Teacher not found!" });
-      if (teacher.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
-      if (password !== teacher.password && !(await bcrypt.compare(password, teacher.password))) return res.status(400).json({ error: "Invalid Password!" });
-      return res.json({ success: true, data: teacher });
-    }
-    res.status(400).json({ error: "Invalid Role!" });
-  } catch (error) { res.status(500).json({ error: error.message }); }
+    const users = await School.find(req.query);
+    res.status(200).json(users); // ফাঁকা থাকলে [] পাঠাবে, ফ্লাটার এটাই চায়
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ==========================================
-// 🟢 6. Dynamic Firebase-like Routing Engine (The Magic)
-// ==========================================
-// এই লজিকটি ফ্লাটার থেকে আসা যেকোনো কালেকশন (students, teachers, homework, doubts) অটোমেটিক সেভ করবে!
-
-const getDynamicModel = (collectionName) => {
-  if (mongoose.models[collectionName]) return mongoose.models[collectionName];
-  const schema = new mongoose.Schema({}, { strict: false, versionKey: false });
-  return mongoose.model(collectionName, schema, collectionName);
-};
-
-// 🔹 Get specific school admin details
+// 🔹 ফ্লাটার যখন নির্দিষ্ট User ID চেক করবে
 app.get('/api/users/:uid', async (req, res) => {
   try {
-    let data = await School.findOne({ uid: req.params.uid });
-    if (!data) data = { uid: req.params.uid, currentPlan: "7 Days Ads Plan" };
-    res.json(data);
+    let school = await School.findOne({ uid: req.params.uid });
+    if (school) {
+      res.status(200).json(school); // ইউজার থাকলে ডেটা পাঠাবে
+    } else {
+      res.status(404).json({ message: "User not found" }); // 🔴 ম্যাজিক ফিক্স: ইউজার না থাকলে 404 পাঠাবে, যাতে ফ্লাটার অ্যাপ "Already Taken" এরর না দেয়!
+    }
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 🔹 ডেটা সেভ করার সময় (Firebase এর মতো অটো-ক্রিয়েট)
+app.put('/api/users/:uid', async (req, res) => {
+  try {
+    const updated = await School.findOneAndUpdate(
+      { uid: req.params.uid }, 
+      { $set: req.body }, 
+      { new: true, upsert: true } // 🔴 upsert: true মানে হলো আগে না থাকলে অটোমেটিক বানিয়ে নেবে!
+    );
+    res.json({ success: true, data: updated });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -123,26 +108,65 @@ app.patch('/api/users/:uid', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🔹 Get full list from a collection (e.g., all students, all doubts)
+
+// ==========================================
+// 🟢 7. MASTER LOGIN API
+// ==========================================
+app.post('/api/login', async (req, res) => {
+  try {
+    const { role, schoolId, userId, password } = req.body;
+
+    if (role === "admin") {
+      const school = await School.findOne({ uid: userId });
+      if (!school) return res.status(404).json({ error: "Admin ID not found!" });
+      // Plain text check for initial testing based on your flutter code
+      if (password !== school.password) return res.status(400).json({ error: "Invalid Password!" });
+      return res.json({ success: true, data: school });
+    }
+
+    if (role === "student") {
+      const student = await Student.findOne({ schoolId: schoolId, docId: `student_${userId}` });
+      if (!student) return res.status(404).json({ error: "Student not found!" });
+      if (student.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
+      if (password !== student.password) return res.status(400).json({ error: "Invalid Password!" });
+      return res.json({ success: true, data: student });
+    }
+
+    if (role === "teacher") {
+      const teacher = await Teacher.findOne({ schoolId: schoolId, docId: userId });
+      if (!teacher) return res.status(404).json({ error: "Teacher not found!" });
+      if (teacher.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
+      if (password !== teacher.password) return res.status(400).json({ error: "Invalid Password!" });
+      return res.json({ success: true, data: teacher });
+    }
+    res.status(400).json({ error: "Invalid Role!" });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// ==========================================
+// 🟢 8. Dynamic Firebase-like Routing Engine
+// ==========================================
+const getDynamicModel = (collectionName) => {
+  if (mongoose.models[collectionName]) return mongoose.models[collectionName];
+  const schema = new mongoose.Schema({}, { strict: false, versionKey: false });
+  return mongoose.model(collectionName, schema, collectionName);
+};
+
+// 🔹 Get full list from a collection
 app.get('/api/users/:uid/:collectionName', async (req, res) => {
   try {
     const Model = getDynamicModel(req.params.collectionName);
-    const filter = { schoolId: req.params.uid, ...req.query }; // Query filters (e.g., status='Pending') applied dynamically
+    const filter = { schoolId: req.params.uid, ...req.query }; 
     const data = await Model.find(filter);
-    
-    // Convert _id to id for Flutter
-    const formattedData = data.map(d => ({ id: d._id.toString(), ...d._doc }));
-    res.json(formattedData);
+    res.json(data.map(d => ({ id: d.docId || d._id.toString(), ...d._doc })));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🔹 Add new document to a collection
+// 🔹 Add new document
 app.post('/api/users/:uid/:collectionName', async (req, res) => {
   try {
     const Model = getDynamicModel(req.params.collectionName);
     let dataToSave = { ...req.body, schoolId: req.params.uid };
-    
-    // Encrypt Gov ID if present
     if (dataToSave.govIdNumber) dataToSave.govIdNumber = encryptData(dataToSave.govIdNumber);
     
     const newDoc = new Model(dataToSave);
@@ -151,13 +175,13 @@ app.post('/api/users/:uid/:collectionName', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🔹 Get, Put, Patch, Delete a specific document (e.g., student_123, app_data)
+// 🔹 Get, Put, Patch, Delete a specific document
 app.route('/api/users/:uid/:collectionName/:docId')
   .get(async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
       const data = await Model.findOne({ schoolId: req.params.uid, docId: req.params.docId });
-      if (data) res.json({ id: data._id.toString(), ...data._doc });
+      if (data) res.json({ id: data.docId || data._id.toString(), ...data._doc });
       else res.status(404).json({ error: "Not Found" });
     } catch (err) { res.status(500).json({ error: err.message }); }
   })
@@ -176,17 +200,12 @@ app.route('/api/users/:uid/:collectionName/:docId')
   .patch(async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
-      
-      // Handle Flutter's dot notation (e.g., 'attendance.25-08-2026': 'P')
       let updateQuery = { $set: {} };
       let unsetQuery = { $unset: {} };
       
       for (let key in req.body) {
-        if (req.body[key] === null) {
-          unsetQuery.$unset[key] = "";
-        } else {
-          updateQuery.$set[key] = req.body[key];
-        }
+        if (req.body[key] === null) unsetQuery.$unset[key] = "";
+        else updateQuery.$set[key] = req.body[key];
       }
 
       let finalUpdate = {};
@@ -196,7 +215,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
       const updated = await Model.findOneAndUpdate(
         { schoolId: req.params.uid, docId: req.params.docId }, 
         finalUpdate, 
-        { new: true }
+        { new: true, upsert: true }
       );
       res.json(updated || {});
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -204,7 +223,6 @@ app.route('/api/users/:uid/:collectionName/:docId')
   .delete(async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
-      // Mongoose _id vs Custom docId detection
       let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
       await Model.findOneAndDelete(query);
       res.json({ success: true, message: "Deleted Successfully" });
@@ -212,7 +230,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
   });
 
 // ==========================================
-// 🟢 7. Active Rooms (Live Exam & Meetings)
+// 🟢 9. Active Rooms (Live Exam & WebRTC)
 // ==========================================
 const ActiveRoom = getDynamicModel('active_rooms');
 
@@ -240,7 +258,7 @@ app.get('/api/active_rooms/:roomId', async (req, res) => {
 
 app.patch('/api/active_rooms/:roomId', async (req, res) => {
   try {
-    const updated = await ActiveRoom.findOneAndUpdate({ docId: req.params.roomId }, { $set: req.body }, { new: true });
+    const updated = await ActiveRoom.findOneAndUpdate({ docId: req.params.roomId }, { $set: req.body }, { new: true, upsert: true });
     res.json(updated || {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -252,7 +270,7 @@ app.delete('/api/active_rooms/:roomId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// --- Room Sub-collections (Participants, Questions, Signaling, Chat) ---
+// --- Room Sub-collections ---
 app.get('/api/active_rooms/:roomId/:subCollection', async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
@@ -289,7 +307,7 @@ app.put('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) =
 app.patch('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
-    const updated = await Model.findOneAndUpdate({ docId: req.params.subDocId }, { $set: req.body }, { new: true });
+    const updated = await Model.findOneAndUpdate({ docId: req.params.subDocId }, { $set: req.body }, { new: true, upsert: true });
     res.json(updated || {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -302,8 +320,9 @@ app.delete('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+
 // ==========================================
-// 🟢 Global Developer Feedbacks (Without UID in path)
+// 🟢 Global Developer Feedbacks
 // ==========================================
 const Feedback = getDynamicModel('developer_feedbacks');
 app.get('/api/developer_feedbacks', async (req, res) => {
@@ -326,11 +345,10 @@ app.delete('/api/developer_feedbacks/:id', async (req, res) => {
   try { await Feedback.findByIdAndDelete(req.params.id); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-
 // ==========================================
-// 🟢 8. Server Start
+// 🟢 Server Start
 // ==========================================
-const PORT = process.env.PORT || 10000; // Render uses dynamic ports
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Master Backend Server is running on Port: ${PORT}`);
 });
