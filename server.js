@@ -24,7 +24,7 @@ mongoose.connect('mongodb+srv://robiul926sk_db_user:X35cF8uk3qXGabH8@cluster0.ax
   .catch((err) => console.log("❌ DB Connection Error:", err));
 
 // ==========================================
-// 🟢 3. Socket.io Setup
+// 🟢 3. Socket.io Setup (For Real-time Sync)
 // ==========================================
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] }
@@ -32,19 +32,37 @@ const io = new Server(server, {
 
 io.on('connection', (socket) => {
   console.log('🔵 New User Connected to Socket:', socket.id);
-  socket.on('join_room', (roomId) => { socket.join(roomId); });
-  socket.on('send_message', (data) => { io.to(data.roomId).emit('receive_message', data); });
-  socket.on('disconnect', () => { console.log('🔴 User Disconnected:', socket.id); });
+  
+  socket.on('join_room', (roomId) => { 
+    socket.join(roomId); 
+    console.log(`User joined room: ${roomId}`);
+  });
+
+  // 🟢 ম্যাজিক: ইউজার তার স্কুল আইডির রুমে জয়েন করবে, যাতে ডাটাবেস চেঞ্জ হলে সাথে সাথে সিগন্যাল পায়
+  socket.on('join_school_room', (schoolId) => { 
+    socket.join(schoolId); 
+    console.log(`User joined school room for live sync: ${schoolId}`);
+  });
+
+  socket.on('send_message', (data) => { 
+    io.to(data.roomId).emit('receive_message', data); 
+  });
+
+  socket.on('disconnect', () => { 
+    console.log('🔴 User Disconnected:', socket.id); 
+  });
 });
 
 // ==========================================
-// 🟢 4. Security & Encryption
+// 🟢 4. Security & Encryption (Govt IDs)
 // ==========================================
 const ENCRYPTION_KEY = crypto.randomBytes(32); 
 const IV_LENGTH = 16;
 
 function encryptData(text) {
   if (!text) return text;
+  if (text.includes(':') && text.length > 32) return text; // আগে থেকেই এনক্রিপ্ট করা থাকলে স্কিপ করবে
+  
   let iv = crypto.randomBytes(IV_LENGTH);
   let cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY), iv);
   let encrypted = cipher.update(text);
@@ -52,65 +70,101 @@ function encryptData(text) {
   return iv.toString('hex') + ':' + encrypted.toString('hex');
 }
 
+// 🟢 ম্যাজিক ফিক্স: ডিক্রিপশন ফাংশন (যাতে ফ্লাটার অ্যাপ আসল ডেটা দেখতে পায়)
+function decryptData(text) {
+  if (!text || !text.includes(':')) return text;
+  try {
+    let textParts = text.split(':');
+    let iv = Buffer.from(textParts.shift(), 'hex');
+    let encryptedText = Buffer.from(textParts.join(':'), 'hex');
+    let decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY), iv);
+    let decrypted = decipher.update(encryptedText);
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+    return decrypted.toString();
+  } catch (error) {
+    return text; // ডিক্রিপ্ট করতে না পারলে অরিজিনালটাই রিটার্ন করবে
+  }
+}
+
 // ==========================================
-// 🟢 5. Models for Login
+// 🟢 5. Models (strict: false থাকার জন্য অটোমেটিক ফিল্ড/বক্স তৈরি হবে)
 // ==========================================
-const schoolSchema = new mongoose.Schema({ uid: String, schoolName: String, password: String, email: String, phone: String }, { strict: false });
+const schoolSchema = new mongoose.Schema({ uid: String }, { strict: false });
 const School = mongoose.model('School', schoolSchema);
 
-const studentSchema = new mongoose.Schema({ schoolId: String, docId: String, password: String, loginEnabled: Boolean }, { strict: false });
+const studentSchema = new mongoose.Schema({ schoolId: String, docId: String }, { strict: false });
 const Student = mongoose.model('Student', studentSchema, 'students');
 
-const teacherSchema = new mongoose.Schema({ schoolId: String, docId: String, password: String, loginEnabled: Boolean }, { strict: false });
+const teacherSchema = new mongoose.Schema({ schoolId: String, docId: String }, { strict: false });
 const Teacher = mongoose.model('Teacher', teacherSchema, 'teachers');
 
 
 // ==========================================
-// 🟢 6. ADMIN & USER CHECKING (THE BUG FIX IS HERE)
+// 🟢 6. ADMIN & USER CHECKING
 // ==========================================
 
-// 🔹 ফ্লাটার যখন ইমেইল বা ফোন দিয়ে চেক করবে (For Duplicate Check)
 app.get('/api/users', async (req, res) => {
   try {
     const users = await School.find(req.query);
-    res.status(200).json(users); // ফাঁকা থাকলে [] পাঠাবে, ফ্লাটার এটাই চায়
+    res.status(200).json(users); 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🔹 ফ্লাটার যখন নির্দিষ্ট User ID চেক করবে
 app.get('/api/users/:uid', async (req, res) => {
   try {
     let school = await School.findOne({ uid: req.params.uid });
     if (school) {
-      res.status(200).json(school); // ইউজার থাকলে ডেটা পাঠাবে
+      res.status(200).json(school); 
     } else {
-      res.status(404).json({ message: "User not found" }); // 🔴 ম্যাজিক ফিক্স: ইউজার না থাকলে 404 পাঠাবে, যাতে ফ্লাটার অ্যাপ "Already Taken" এরর না দেয়!
+      res.status(404).json({ message: "User not found" }); 
     }
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🔹 ডেটা সেভ করার সময় (Firebase এর মতো অটো-ক্রিয়েট)
 app.put('/api/users/:uid', async (req, res) => {
   try {
+    let updateData = { ...req.body };
+    if (updateData.currentPlan) {
+      let planName = updateData.currentPlan.toLowerCase();
+      let addedDays = 30; 
+      if (planName.includes("7 days") || planName.includes("week") || planName.includes("49")) addedDays = 7;
+      if (planName.includes("3 months")) addedDays = 90;
+      if (planName.includes("1 year") || planName.includes("1499")) addedDays = 365;
+      updateData.end_date = Date.now() + (addedDays * 24 * 60 * 60 * 1000);
+    }
+
     const updated = await School.findOneAndUpdate(
       { uid: req.params.uid }, 
-      { $set: req.body }, 
-      { new: true, upsert: true } // 🔴 upsert: true মানে হলো আগে না থাকলে অটোমেটিক বানিয়ে নেবে!
+      { $set: updateData }, 
+      { new: true, upsert: true } 
     );
+    
+    io.to(req.params.uid).emit('data_updated', { type: 'school_data' });
     res.json({ success: true, data: updated });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.patch('/api/users/:uid', async (req, res) => {
   try {
-    const updated = await School.findOneAndUpdate({ uid: req.params.uid }, { $set: req.body }, { new: true, upsert: true });
+    let updateData = { ...req.body };
+    if (updateData.currentPlan) {
+      let planName = updateData.currentPlan.toLowerCase();
+      let addedDays = 30; 
+      if (planName.includes("7 days") || planName.includes("week") || planName.includes("49")) addedDays = 7;
+      if (planName.includes("3 months")) addedDays = 90;
+      if (planName.includes("1 year") || planName.includes("1499")) addedDays = 365;
+      updateData.end_date = Date.now() + (addedDays * 24 * 60 * 60 * 1000);
+    }
+
+    const updated = await School.findOneAndUpdate({ uid: req.params.uid }, { $set: updateData }, { new: true, upsert: true });
+    io.to(req.params.uid).emit('data_updated', { type: 'school_data' });
     res.json(updated);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 
 // ==========================================
-// 🟢 7. MASTER LOGIN API
+// 🟢 7. MASTER LOGIN API (WITH CUSTOM STUDENT ID FIX)
 // ==========================================
 app.post('/api/login', async (req, res) => {
   try {
@@ -119,16 +173,26 @@ app.post('/api/login', async (req, res) => {
     if (role === "admin") {
       const school = await School.findOne({ uid: userId });
       if (!school) return res.status(404).json({ error: "Admin ID not found!" });
-      // Plain text check for initial testing based on your flutter code
       if (password !== school.password) return res.status(400).json({ error: "Invalid Password!" });
       return res.json({ success: true, data: school });
     }
 
     if (role === "student") {
-      const student = await Student.findOne({ schoolId: schoolId, docId: `student_${userId}` });
-      if (!student) return res.status(404).json({ error: "Student not found!" });
+      // 🟢 কাস্টম ইউজার আইডি লজিক (যেমন: Nasrin 05 -> nas05)
+      const allStudents = await Student.find({ schoolId: schoolId });
+      
+      const student = allStudents.find(s => {
+        if (!s.name || !s.roll) return false;
+        let namePart = s.name.length >= 3 ? s.name.substring(0, 3).toLowerCase() : s.name.toLowerCase();
+        let generatedId = namePart + s.roll.toLowerCase();
+        return generatedId === userId.toLowerCase();
+      });
+
+      if (!student) return res.status(404).json({ error: "Student ID not found! Check Name and Roll." });
       if (student.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
       if (password !== student.password) return res.status(400).json({ error: "Invalid Password!" });
+      
+      if (student.govIdNumber) student.govIdNumber = decryptData(student.govIdNumber);
       return res.json({ success: true, data: student });
     }
 
@@ -137,14 +201,17 @@ app.post('/api/login', async (req, res) => {
       if (!teacher) return res.status(404).json({ error: "Teacher not found!" });
       if (teacher.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
       if (password !== teacher.password) return res.status(400).json({ error: "Invalid Password!" });
+      
+      if (teacher.govIdNumber) teacher.govIdNumber = decryptData(teacher.govIdNumber);
       return res.json({ success: true, data: teacher });
     }
     res.status(400).json({ error: "Invalid Role!" });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
+
 // ==========================================
-// 🟢 8. Dynamic Firebase-like Routing Engine
+// 🟢 8. Dynamic Firebase-like Routing Engine (With Encryption & Sync)
 // ==========================================
 const getDynamicModel = (collectionName) => {
   if (mongoose.models[collectionName]) return mongoose.models[collectionName];
@@ -152,36 +219,50 @@ const getDynamicModel = (collectionName) => {
   return mongoose.model(collectionName, schema, collectionName);
 };
 
-// 🔹 Get full list from a collection
 app.get('/api/users/:uid/:collectionName', async (req, res) => {
   try {
     const Model = getDynamicModel(req.params.collectionName);
     const filter = { schoolId: req.params.uid, ...req.query }; 
     const data = await Model.find(filter);
-    res.json(data.map(d => ({ id: d.docId || d._id.toString(), ...d._doc })));
+    
+    const formattedData = data.map(d => {
+      let obj = { id: d.docId || d._id.toString(), ...d._doc };
+      if (obj.govIdNumber) obj.govIdNumber = decryptData(obj.govIdNumber);
+      if (obj.aadhaar) obj.aadhaar = decryptData(obj.aadhaar);
+      return obj;
+    });
+
+    res.json(formattedData);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🔹 Add new document
 app.post('/api/users/:uid/:collectionName', async (req, res) => {
   try {
     const Model = getDynamicModel(req.params.collectionName);
     let dataToSave = { ...req.body, schoolId: req.params.uid };
+    
     if (dataToSave.govIdNumber) dataToSave.govIdNumber = encryptData(dataToSave.govIdNumber);
+    if (dataToSave.aadhaar) dataToSave.aadhaar = encryptData(dataToSave.aadhaar);
     
     const newDoc = new Model(dataToSave);
     await newDoc.save();
+    
+    io.to(req.params.uid).emit('data_updated', { type: req.params.collectionName });
     res.status(201).json({ success: true, id: newDoc._id.toString() });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🔹 Get, Put, Patch, Delete a specific document
 app.route('/api/users/:uid/:collectionName/:docId')
   .get(async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
       const data = await Model.findOne({ schoolId: req.params.uid, docId: req.params.docId });
-      if (data) res.json({ id: data.docId || data._id.toString(), ...data._doc });
+      if (data) {
+        let obj = { id: data.docId || data._id.toString(), ...data._doc };
+        if (obj.govIdNumber) obj.govIdNumber = decryptData(obj.govIdNumber);
+        if (obj.aadhaar) obj.aadhaar = decryptData(obj.aadhaar);
+        res.json(obj);
+      }
       else res.status(404).json({ error: "Not Found" });
     } catch (err) { res.status(500).json({ error: err.message }); }
   })
@@ -189,11 +270,17 @@ app.route('/api/users/:uid/:collectionName/:docId')
     try {
       const Model = getDynamicModel(req.params.collectionName);
       let updateData = { ...req.body, schoolId: req.params.uid, docId: req.params.docId };
+      
+      if (updateData.govIdNumber) updateData.govIdNumber = encryptData(updateData.govIdNumber);
+      if (updateData.aadhaar) updateData.aadhaar = encryptData(updateData.aadhaar);
+
       const updated = await Model.findOneAndUpdate(
         { schoolId: req.params.uid, docId: req.params.docId }, 
         updateData, 
         { new: true, upsert: true }
       );
+      
+      io.to(req.params.uid).emit('data_updated', { type: req.params.collectionName });
       res.json(updated);
     } catch (err) { res.status(500).json({ error: err.message }); }
   })
@@ -205,7 +292,13 @@ app.route('/api/users/:uid/:collectionName/:docId')
       
       for (let key in req.body) {
         if (req.body[key] === null) unsetQuery.$unset[key] = "";
-        else updateQuery.$set[key] = req.body[key];
+        else {
+          if (key === 'govIdNumber' || key === 'aadhaar') {
+            updateQuery.$set[key] = encryptData(req.body[key]);
+          } else {
+            updateQuery.$set[key] = req.body[key];
+          }
+        }
       }
 
       let finalUpdate = {};
@@ -217,6 +310,8 @@ app.route('/api/users/:uid/:collectionName/:docId')
         finalUpdate, 
         { new: true, upsert: true }
       );
+      
+      io.to(req.params.uid).emit('data_updated', { type: req.params.collectionName });
       res.json(updated || {});
     } catch (err) { res.status(500).json({ error: err.message }); }
   })
@@ -225,12 +320,14 @@ app.route('/api/users/:uid/:collectionName/:docId')
       const Model = getDynamicModel(req.params.collectionName);
       let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
       await Model.findOneAndDelete(query);
+      
+      io.to(req.params.uid).emit('data_updated', { type: req.params.collectionName });
       res.json({ success: true, message: "Deleted Successfully" });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
 // ==========================================
-// 🟢 9. Active Rooms (Live Exam & WebRTC)
+// 🟢 9. Active Rooms (Live Exam & WebRTC) - Fixed PathError
 // ==========================================
 const ActiveRoom = getDynamicModel('active_rooms');
 
@@ -238,6 +335,7 @@ app.post('/api/active_rooms', async (req, res) => {
   try {
     const newRoom = new ActiveRoom({ ...req.body, docId: req.body.roomId });
     await newRoom.save();
+    io.emit('room_updated', newRoom.docId); 
     res.status(201).json({ success: true, id: newRoom.docId });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -259,6 +357,7 @@ app.get('/api/active_rooms/:roomId', async (req, res) => {
 app.patch('/api/active_rooms/:roomId', async (req, res) => {
   try {
     const updated = await ActiveRoom.findOneAndUpdate({ docId: req.params.roomId }, { $set: req.body }, { new: true, upsert: true });
+    io.emit('room_updated', req.params.roomId);
     res.json(updated || {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -266,6 +365,7 @@ app.patch('/api/active_rooms/:roomId', async (req, res) => {
 app.delete('/api/active_rooms/:roomId', async (req, res) => {
   try {
     await ActiveRoom.findOneAndDelete({ docId: req.params.roomId });
+    io.emit('room_updated', req.params.roomId);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -292,6 +392,7 @@ app.post('/api/active_rooms/:roomId/:subCollection', async (req, res) => {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const newDoc = new Model({ ...req.body, docId: req.body.id || req.body.roomId });
     await newDoc.save();
+    io.emit('room_sub_updated', req.params.roomId);
     res.status(201).json({ success: true, id: newDoc._id.toString() });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -300,6 +401,7 @@ app.put('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) =
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const updated = await Model.findOneAndUpdate({ docId: req.params.subDocId }, { ...req.body, docId: req.params.subDocId }, { new: true, upsert: true });
+    io.emit('room_sub_updated', req.params.roomId);
     res.json(updated);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -308,6 +410,7 @@ app.patch('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res)
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const updated = await Model.findOneAndUpdate({ docId: req.params.subDocId }, { $set: req.body }, { new: true, upsert: true });
+    io.emit('room_sub_updated', req.params.roomId);
     res.json(updated || {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -316,6 +419,7 @@ app.delete('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     await Model.findOneAndDelete({ docId: req.params.subDocId });
+    io.emit('room_sub_updated', req.params.roomId);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
