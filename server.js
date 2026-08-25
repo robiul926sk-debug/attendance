@@ -128,17 +128,15 @@ app.get('/api/users/:uid', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🔹 Date calculation helper (মানুষের পড়ার মতো ডেট এবং সার্কেল লজিক)
+// 🔹 Date calculation helper
 async function calculateReadableEndDate(uid, updateData) {
-  // ১. যদি আপনি হাত দিয়ে কোনো ডেট পাঠান (যেমন: "2026-12-31") বা ফ্লাটার থেকে কোনো ডেট আসে
   if (updateData.end_date) {
     let parsedDate = new Date(updateData.end_date);
     if (!isNaN(parsedDate)) {
-      return parsedDate.toISOString(); // সব সময় মানুষের পড়ার মতো (ISO) স্ট্রিং সেভ হবে
+      return parsedDate.toISOString(); 
     }
   }
 
-  // ২. যদি প্ল্যান রিচার্জ করা হয়, তবে সার্কেল লজিক কাজ করবে
   if (updateData.currentPlan) {
     let planName = updateData.currentPlan.toLowerCase();
     let addedDays = 30; 
@@ -146,20 +144,18 @@ async function calculateReadableEndDate(uid, updateData) {
     if (planName.includes("3 months")) addedDays = 90;
     if (planName.includes("1 year") || planName.includes("1499")) addedDays = 365;
 
-    // ইউজারের আগের ডেটাবেস চেক করা
     const currentSchool = await School.findOne({ uid: uid });
-    let baseDate = new Date(); // আজকের ডেট
+    let baseDate = new Date(); 
 
     if (currentSchool && currentSchool.end_date) {
       let existingDate = new Date(currentSchool.end_date);
-      // যদি ইউজারের আগের প্ল্যান এখনো বাকি থাকে, তবে আজকের ডেটের বদলে সেই ডেটের সাথে যোগ হবে
       if (!isNaN(existingDate) && existingDate > baseDate) {
         baseDate = existingDate; 
       }
     }
 
     baseDate.setDate(baseDate.getDate() + addedDays);
-    return baseDate.toISOString(); // যেমন: "2026-09-28T12:00:00.000Z"
+    return baseDate.toISOString(); 
   }
 
   return updateData.end_date;
@@ -168,8 +164,6 @@ async function calculateReadableEndDate(uid, updateData) {
 app.put('/api/users/:uid', async (req, res) => {
   try {
     let updateData = { ...req.body };
-    
-    // 🟢 ম্যাজিক ফিক্স: মানুষের পড়ার মতো ডেট এবং সার্কেল লজিক
     if (updateData.end_date || updateData.currentPlan) {
       updateData.end_date = await calculateReadableEndDate(req.params.uid, updateData);
     }
@@ -188,8 +182,6 @@ app.put('/api/users/:uid', async (req, res) => {
 app.patch('/api/users/:uid', async (req, res) => {
   try {
     let updateData = { ...req.body };
-    
-    // 🟢 ম্যাজিক ফিক্স: মানুষের পড়ার মতো ডেট এবং সার্কেল লজিক
     if (updateData.end_date || updateData.currentPlan) {
       updateData.end_date = await calculateReadableEndDate(req.params.uid, updateData);
     }
@@ -248,7 +240,7 @@ app.post('/api/login', async (req, res) => {
 
 
 // ==========================================
-// 🟢 8. Dynamic Firebase-like Routing Engine
+// 🟢 8. Dynamic Firebase-like Routing Engine (WITH PERFECT CALL LOGIC)
 // ==========================================
 const getDynamicModel = (collectionName) => {
   if (mongoose.models[collectionName]) return mongoose.models[collectionName];
@@ -284,6 +276,11 @@ app.post('/api/users/:uid/:collectionName', async (req, res) => {
     const newDoc = new Model(dataToSave);
     await newDoc.save();
     
+    // 🟢 ম্যাজিক ফিক্স: ডাইরেক্ট কল করলে সকেটে ইনকামিং সিগন্যাল যাবে
+    if (req.params.collectionName === 'call_requests' && dataToSave.status === 'Called Now') {
+      io.to(dataToSave.targetId).emit('incoming_call', { ...dataToSave, id: newDoc._id.toString() });
+    }
+
     io.to(req.params.uid).emit('data_updated', { type: req.params.collectionName });
     res.status(201).json({ success: true, id: newDoc._id.toString() });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -293,7 +290,9 @@ app.route('/api/users/:uid/:collectionName/:docId')
   .get(async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
-      const data = await Model.findOne({ schoolId: req.params.uid, docId: req.params.docId });
+      let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
+      const data = await Model.findOne(query);
+      
       if (data) {
         let obj = { id: data.docId || data._id.toString(), ...data._doc };
         if (obj.govIdNumber) obj.govIdNumber = decryptData(obj.govIdNumber);
@@ -307,12 +306,13 @@ app.route('/api/users/:uid/:collectionName/:docId')
     try {
       const Model = getDynamicModel(req.params.collectionName);
       let updateData = { ...req.body, schoolId: req.params.uid, docId: req.params.docId };
+      let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
       
       if (updateData.govIdNumber) updateData.govIdNumber = encryptData(updateData.govIdNumber);
       if (updateData.aadhaar) updateData.aadhaar = encryptData(updateData.aadhaar);
 
       const updated = await Model.findOneAndUpdate(
-        { schoolId: req.params.uid, docId: req.params.docId }, 
+        query, 
         updateData, 
         { new: true, upsert: true }
       );
@@ -327,6 +327,38 @@ app.route('/api/users/:uid/:collectionName/:docId')
       let updateQuery = { $set: {} };
       let unsetQuery = { $unset: {} };
       
+      // 🟢 🟢 ম্যাজিক ফিক্স: কলিং এর রুলস (ডিলিট এবং সকেট সিগন্যাল)
+      let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
+      let existingDoc = await Model.findOne(query);
+
+      if (req.params.collectionName === 'call_requests') {
+        if (req.body.status === 'Rejected') {
+          // কল রিজেক্ট করলে ডেটাবেস থেকে ডিলিট করে দাও (হিস্ট্রি রাখার দরকার নেই)
+          if (existingDoc) {
+            await Model.findOneAndDelete(query);
+            let caller = existingDoc.callerId || existingDoc.studentId;
+            if (caller) io.to(caller).emit('call_ended', { docId: req.params.docId });
+            if (existingDoc.targetId) io.to(existingDoc.targetId).emit('call_ended', { docId: req.params.docId });
+          }
+          return res.json({ success: true, message: "Rejected and History Deleted" });
+        } 
+        else if (req.body.status === 'Ended' || req.body.status === 'Missed') {
+          // কল কাটলে দুজনের কাছে সিগন্যাল পাঠাও
+          if (existingDoc) {
+            let caller = existingDoc.callerId || existingDoc.studentId;
+            if (caller) io.to(caller).emit('call_ended', { docId: req.params.docId });
+            if (existingDoc.targetId) io.to(existingDoc.targetId).emit('call_ended', { docId: req.params.docId });
+          }
+        } 
+        else if (req.body.status === 'Accepted' || req.body.status === 'In Call') {
+          // রিসিভ করলে কলারকে সিগন্যাল পাঠাও
+          if (existingDoc) {
+            let caller = existingDoc.callerId || existingDoc.studentId;
+            if (caller) io.to(caller).emit('call_answered', { docId: req.params.docId });
+          }
+        }
+      }
+
       for (let key in req.body) {
         if (req.body[key] === null) unsetQuery.$unset[key] = "";
         else {
@@ -343,7 +375,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
       if (Object.keys(unsetQuery.$unset).length > 0) finalUpdate = { ...finalUpdate, ...unsetQuery };
 
       const updated = await Model.findOneAndUpdate(
-        { schoolId: req.params.uid, docId: req.params.docId }, 
+        query, 
         finalUpdate, 
         { new: true, upsert: true }
       );
