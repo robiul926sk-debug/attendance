@@ -240,7 +240,7 @@ app.post('/api/login', async (req, res) => {
 
 
 // ==========================================
-// 🟢 8. Dynamic Firebase-like Routing Engine (WITH PERFECT CALL LOGIC)
+// 🟢 8. Dynamic Firebase-like Routing Engine (WITH CASCADING DELETE)
 // ==========================================
 const getDynamicModel = (collectionName) => {
   if (mongoose.models[collectionName]) return mongoose.models[collectionName];
@@ -327,13 +327,11 @@ app.route('/api/users/:uid/:collectionName/:docId')
       let updateQuery = { $set: {} };
       let unsetQuery = { $unset: {} };
       
-      // 🟢 🟢 ম্যাজিক ফিক্স: কলিং এর রুলস (ডিলিট এবং সকেট সিগন্যাল)
       let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
       let existingDoc = await Model.findOne(query);
 
       if (req.params.collectionName === 'call_requests') {
         if (req.body.status === 'Rejected') {
-          // কল রিজেক্ট করলে ডেটাবেস থেকে ডিলিট করে দাও (হিস্ট্রি রাখার দরকার নেই)
           if (existingDoc) {
             await Model.findOneAndDelete(query);
             let caller = existingDoc.callerId || existingDoc.studentId;
@@ -343,7 +341,6 @@ app.route('/api/users/:uid/:collectionName/:docId')
           return res.json({ success: true, message: "Rejected and History Deleted" });
         } 
         else if (req.body.status === 'Ended' || req.body.status === 'Missed') {
-          // কল কাটলে দুজনের কাছে সিগন্যাল পাঠাও
           if (existingDoc) {
             let caller = existingDoc.callerId || existingDoc.studentId;
             if (caller) io.to(caller).emit('call_ended', { docId: req.params.docId });
@@ -351,7 +348,6 @@ app.route('/api/users/:uid/:collectionName/:docId')
           }
         } 
         else if (req.body.status === 'Accepted' || req.body.status === 'In Call') {
-          // রিসিভ করলে কলারকে সিগন্যাল পাঠাও
           if (existingDoc) {
             let caller = existingDoc.callerId || existingDoc.studentId;
             if (caller) io.to(caller).emit('call_answered', { docId: req.params.docId });
@@ -388,12 +384,53 @@ app.route('/api/users/:uid/:collectionName/:docId')
     try {
       const Model = getDynamicModel(req.params.collectionName);
       let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
-      await Model.findOneAndDelete(query);
       
+      const deletedDoc = await Model.findOneAndDelete(query);
+      
+      // 🟢 🟢 ম্যাজিক ফিক্স: ডিপ ক্লিনিং (Cascaded Delete) - জঞ্জাল সাফাই 🟢 🟢
+      if (deletedDoc) {
+         if (req.params.collectionName === 'students') { 
+             let roll = deletedDoc.roll || deletedDoc.docId.replace('student_', '');
+             await getDynamicModel('doubts').deleteMany({ studentRoll: roll, schoolId: req.params.uid });
+             await getDynamicModel('pending_payments').deleteMany({ studentRoll: roll, schoolId: req.params.uid });
+             await getDynamicModel('call_requests').deleteMany({ $or: [{ studentId: roll }, { targetId: roll }, { callerId: roll }], schoolId: req.params.uid });
+             await getDynamicModel('pending_students').deleteMany({ 'studentData.roll': roll, schoolId: req.params.uid });
+         } 
+         else if (req.params.collectionName === 'teachers') {
+             let tId = deletedDoc.docId || deletedDoc.id || deletedDoc._id.toString();
+             await getDynamicModel('doubts').deleteMany({ targetTeacherId: tId, schoolId: req.params.uid });
+             await getDynamicModel('pending_payments').deleteMany({ teacherId: tId, schoolId: req.params.uid });
+             await getDynamicModel('call_requests').deleteMany({ $or: [{ targetId: tId }, { callerId: tId }, { teacherId: tId }], schoolId: req.params.uid });
+             await getDynamicModel('teacher_attendance_requests').deleteMany({ teacherId: tId, schoolId: req.params.uid });
+         }
+      }
+
       io.to(req.params.uid).emit('data_updated', { type: req.params.collectionName });
-      res.json({ success: true, message: "Deleted Successfully" });
+      res.json({ success: true, message: "Deleted Successfully and Database Cleaned!" });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
+
+// 🟢 🟢 ম্যাজিক ফিক্স: হোমওয়ার্ক বা যেকোনো ডেটা একসাথে অনেকগুলো ডিলিট করার রুট
+app.delete('/api/users/:uid/:collectionName', async (req, res) => {
+  try {
+    if (req.params.collectionName === 'homework' && req.query.subject && req.query.className) {
+      const Model = getDynamicModel('homework');
+      await Model.deleteMany({ schoolId: req.params.uid, className: req.query.className, subject: req.query.subject });
+      io.to(req.params.uid).emit('data_updated', { type: 'homework' });
+      return res.json({ success: true, message: "Subject Homeworks Deleted Successfully" });
+    }
+
+    const Model = getDynamicModel(req.params.collectionName);
+    const filter = { schoolId: req.params.uid, ...req.query };
+    await Model.deleteMany(filter);
+    
+    io.to(req.params.uid).emit('data_updated', { type: req.params.collectionName });
+    res.json({ success: true, message: "Bulk Delete Successful!" });
+  } catch (err) { 
+    res.status(500).json({ error: err.message }); 
+  }
+});
+
 
 // ==========================================
 // 🟢 9. Active Rooms (Live Exam & WebRTC)
@@ -516,6 +553,134 @@ app.patch('/api/developer_feedbacks/:id', async (req, res) => {
 });
 app.delete('/api/developer_feedbacks/:id', async (req, res) => {
   try { await Feedback.findByIdAndDelete(req.params.id); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// ==========================================
+// 🟢 10. CRON JOB: AUTOMATIC ACCOUNT & RECYCLE BIN DELETION
+// ==========================================
+setInterval(async () => {
+  try {
+    const now = Date.now();
+    
+    // [ক] স্কুলের অ্যাকাউন্ট ডিলিট লজিক (7 Days Delay as per App Request)
+    const schoolsToDelete = await School.find({
+      status: 'pending_deletion',
+      scheduledDeletionTime: { $lte: now }
+    });
+
+    for (let school of schoolsToDelete) {
+      let uid = school.uid;
+      console.log(`🗑️ Auto-deleting School & All Data for UID: ${uid}`);
+
+      await School.findOneAndDelete({ uid: uid });
+      await Student.deleteMany({ schoolId: uid });
+      await Teacher.deleteMany({ schoolId: uid });
+      await getDynamicModel('staffs').deleteMany({ schoolId: uid });
+      await getDynamicModel('expenses').deleteMany({ schoolId: uid });
+      await getDynamicModel('pending_payments').deleteMany({ schoolId: uid });
+      await getDynamicModel('pending_students').deleteMany({ schoolId: uid });
+      await getDynamicModel('attendance_requests').deleteMany({ schoolId: uid });
+      await getDynamicModel('call_requests').deleteMany({ schoolId: uid });
+      
+      // 🟢 ম্যাজিক আপডেট: হোমওয়ার্ক ও লাইভ ডাউটস ডিলিট
+      await getDynamicModel('homework').deleteMany({ schoolId: uid });
+      await getDynamicModel('doubts').deleteMany({ schoolId: uid });
+
+      console.log(`✅ Completely erased all data for ${uid}.`);
+    }
+
+    // [খ] 🟢 ম্যাজিক ফিক্স: রিসাইকেল বিনের ৭ দিনের অটো-ক্লিনিং ইঞ্জিন 🟢
+    const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000); // 7 Days in Milliseconds
+    const modelsToCheck = ['students', 'teachers', 'staffs'];
+
+    for (let collection of modelsToCheck) {
+      const Model = getDynamicModel(collection);
+      const expiredDocs = await Model.find({ isDeleted: true });
+
+      for (let doc of expiredDocs) {
+        if (doc.deletedAt) {
+          let deletedDate = new Date(doc.deletedAt).getTime();
+          
+          if (deletedDate <= sevenDaysAgo) { // ৭ দিন পার হয়ে গেলে
+            console.log(`🗑️ Auto-deleting expired ${collection} record: ${doc.docId || doc.name}`);
+            
+            await Model.findByIdAndDelete(doc._id);
+            
+            // ক্যাসকেডিং ডিলিট - জঞ্জাল সাফাই
+            if (collection === 'students') {
+              let roll = doc.roll || doc.docId.replace('student_', '');
+              await getDynamicModel('doubts').deleteMany({ studentRoll: roll, schoolId: doc.schoolId });
+              await getDynamicModel('pending_payments').deleteMany({ studentRoll: roll, schoolId: doc.schoolId });
+              await getDynamicModel('call_requests').deleteMany({ $or: [{ studentId: roll }, { targetId: roll }, { callerId: roll }], schoolId: doc.schoolId });
+              await getDynamicModel('pending_students').deleteMany({ 'studentData.roll': roll, schoolId: doc.schoolId });
+            } 
+            else if (collection === 'teachers') {
+              let tId = doc.docId || doc.id;
+              await getDynamicModel('doubts').deleteMany({ targetTeacherId: tId, schoolId: doc.schoolId });
+              await getDynamicModel('pending_payments').deleteMany({ teacherId: tId, schoolId: doc.schoolId });
+              await getDynamicModel('call_requests').deleteMany({ $or: [{ targetId: tId }, { callerId: tId }, { teacherId: tId }], schoolId: doc.schoolId });
+              await getDynamicModel('teacher_attendance_requests').deleteMany({ teacherId: tId, schoolId: doc.schoolId });
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error("❌ Cron Job Error:", error.message);
+  }
+}, 60 * 60 * 1000); // 1 Hour Interval
+// ==========================================
+// 🟢 11. WIPE SESSION DATA (NEW YEAR SETUP)
+// ==========================================
+app.delete('/api/users/:uid/wipe_session_data', async (req, res) => {
+  try {
+    const uid = req.params.uid;
+    const clearLedger = req.query.clearLedger === 'true'; // URL থেকে ক্লিয়ার লেজার প্যারামিটার নেবে
+
+    console.log(`🧹 Wiping Session Data for School UID: ${uid} | Clear Ledger: ${clearLedger}`);
+
+    // ১. সমস্ত স্টুডেন্ট ডিলিট করে দেওয়া
+    await Student.deleteMany({ schoolId: uid });
+
+    // ২. টিচারদের অ্যাটেনডেন্স এবং স্যালারি হিস্ট্রি ক্লিয়ার করা (কিন্তু প্রোফাইল থাকবে)
+    await Teacher.updateMany(
+      { schoolId: uid },
+      { $set: { attendance: {}, paymentHistory: [] } }
+    );
+
+    // ৩. স্টাফদের অ্যাটেনডেন্স এবং স্যালারি হিস্ট্রি ক্লিয়ার করা (কিন্তু প্রোফাইল থাকবে)
+    const staffModel = getDynamicModel('staffs');
+    await staffModel.updateMany(
+      { schoolId: uid },
+      { $set: { attendance: {}, paymentHistory: [] } }
+    );
+
+    // ৪. যদি ইউজার লেজার (Expenses) ডিলিট করতে চায়, তবে ডিলিট করবে
+    if (clearLedger) {
+      const expenseModel = getDynamicModel('expenses');
+      await expenseModel.deleteMany({ schoolId: uid });
+    }
+
+    // ৫. পুরোনো পেন্ডিং রিকোয়েস্ট, কল হিস্ট্রি, ডাউট ক্লিয়ার করা
+    const pendingPayModel = getDynamicModel('pending_payments');
+    await pendingPayModel.deleteMany({ schoolId: uid });
+
+    const pendingStuModel = getDynamicModel('pending_students');
+    await pendingStuModel.deleteMany({ schoolId: uid });
+
+    const attReqModel = getDynamicModel('attendance_requests');
+    await attReqModel.deleteMany({ schoolId: uid });
+
+    const callReqModel = getDynamicModel('call_requests');
+    await callReqModel.deleteMany({ schoolId: uid });
+
+    const doubtModel = getDynamicModel('doubts');
+    await doubtModel.deleteMany({ schoolId: uid });
+
+    res.json({ success: true, message: "Session data wiped successfully for New Year Setup." });
+  } catch (err) {
+    console.error("❌ Wipe Session Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ==========================================
