@@ -554,6 +554,8 @@ app.patch('/api/developer_feedbacks/:id', async (req, res) => {
 app.delete('/api/developer_feedbacks/:id', async (req, res) => {
   try { await Feedback.findByIdAndDelete(req.params.id); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+
 // ==========================================
 // 🟢 10. CRON JOB: AUTOMATIC ACCOUNT & RECYCLE BIN DELETION
 // ==========================================
@@ -561,7 +563,7 @@ setInterval(async () => {
   try {
     const now = Date.now();
     
-    // [ক] স্কুলের অ্যাকাউন্ট ডিলিট লজিক (7 Days Delay as per App Request)
+    // [ক] স্কুলের অ্যাকাউন্ট ডিলিট লজিক
     const schoolsToDelete = await School.find({
       status: 'pending_deletion',
       scheduledDeletionTime: { $lte: now }
@@ -569,8 +571,6 @@ setInterval(async () => {
 
     for (let school of schoolsToDelete) {
       let uid = school.uid;
-      console.log(`🗑️ Auto-deleting School & All Data for UID: ${uid}`);
-
       await School.findOneAndDelete({ uid: uid });
       await Student.deleteMany({ schoolId: uid });
       await Teacher.deleteMany({ schoolId: uid });
@@ -581,15 +581,15 @@ setInterval(async () => {
       await getDynamicModel('attendance_requests').deleteMany({ schoolId: uid });
       await getDynamicModel('call_requests').deleteMany({ schoolId: uid });
       
-      // 🟢 ম্যাজিক আপডেট: হোমওয়ার্ক ও লাইভ ডাউটস ডিলিট
+      // হোমওয়ার্ক ও লাইভ ডাউটস ডিলিট
       await getDynamicModel('homework').deleteMany({ schoolId: uid });
       await getDynamicModel('doubts').deleteMany({ schoolId: uid });
 
       console.log(`✅ Completely erased all data for ${uid}.`);
     }
 
-    // [খ] 🟢 ম্যাজিক ফিক্স: রিসাইকেল বিনের ৭ দিনের অটো-ক্লিনিং ইঞ্জিন 🟢
-    const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000); // 7 Days in Milliseconds
+    // [খ] রিসাইকেল বিনের ৭ দিনের অটো-ক্লিনিং ইঞ্জিন
+    const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000); 
     const modelsToCheck = ['students', 'teachers', 'staffs'];
 
     for (let collection of modelsToCheck) {
@@ -600,12 +600,11 @@ setInterval(async () => {
         if (doc.deletedAt) {
           let deletedDate = new Date(doc.deletedAt).getTime();
           
-          if (deletedDate <= sevenDaysAgo) { // ৭ দিন পার হয়ে গেলে
+          if (deletedDate <= sevenDaysAgo) {
             console.log(`🗑️ Auto-deleting expired ${collection} record: ${doc.docId || doc.name}`);
             
             await Model.findByIdAndDelete(doc._id);
             
-            // ক্যাসকেডিং ডিলিট - জঞ্জাল সাফাই
             if (collection === 'students') {
               let roll = doc.roll || doc.docId.replace('student_', '');
               await getDynamicModel('doubts').deleteMany({ studentRoll: roll, schoolId: doc.schoolId });
@@ -628,39 +627,36 @@ setInterval(async () => {
     console.error("❌ Cron Job Error:", error.message);
   }
 }, 60 * 60 * 1000); // 1 Hour Interval
+
+
 // ==========================================
 // 🟢 11. WIPE SESSION DATA (NEW YEAR SETUP)
 // ==========================================
 app.delete('/api/users/:uid/wipe_session_data', async (req, res) => {
   try {
     const uid = req.params.uid;
-    const clearLedger = req.query.clearLedger === 'true'; // URL থেকে ক্লিয়ার লেজার প্যারামিটার নেবে
+    const clearLedger = req.query.clearLedger === 'true'; 
 
     console.log(`🧹 Wiping Session Data for School UID: ${uid} | Clear Ledger: ${clearLedger}`);
 
-    // ১. সমস্ত স্টুডেন্ট ডিলিট করে দেওয়া
     await Student.deleteMany({ schoolId: uid });
 
-    // ২. টিচারদের অ্যাটেনডেন্স এবং স্যালারি হিস্ট্রি ক্লিয়ার করা (কিন্তু প্রোফাইল থাকবে)
     await Teacher.updateMany(
       { schoolId: uid },
       { $set: { attendance: {}, paymentHistory: [] } }
     );
 
-    // ৩. স্টাফদের অ্যাটেনডেন্স এবং স্যালারি হিস্ট্রি ক্লিয়ার করা (কিন্তু প্রোফাইল থাকবে)
     const staffModel = getDynamicModel('staffs');
     await staffModel.updateMany(
       { schoolId: uid },
       { $set: { attendance: {}, paymentHistory: [] } }
     );
 
-    // ৪. যদি ইউজার লেজার (Expenses) ডিলিট করতে চায়, তবে ডিলিট করবে
     if (clearLedger) {
       const expenseModel = getDynamicModel('expenses');
       await expenseModel.deleteMany({ schoolId: uid });
     }
 
-    // ৫. পুরোনো পেন্ডিং রিকোয়েস্ট, কল হিস্ট্রি, ডাউট ক্লিয়ার করা
     const pendingPayModel = getDynamicModel('pending_payments');
     await pendingPayModel.deleteMany({ schoolId: uid });
 
@@ -682,6 +678,40 @@ app.delete('/api/users/:uid/wipe_session_data', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+// ==========================================
+// 🟢 12. TIME-BOUND KEEP-ALIVE PING (7 AM - 7 PM ONLY)
+// ==========================================
+app.get('/ping', (req, res) => {
+  res.status(200).send('Server is awake');
+});
+
+setInterval(() => {
+  try {
+    const now = new Date();
+    // সার্ভারের বর্তমান স্থানীয় সময় বা UTC সময় অনুযায়ী ঘণ্টা বের করা (Render সাধারণত UTC তে চলে, তাই প্রয়োজনে স্থানীয় ঘণ্টা ধরে নিতে পারেন)
+    const currentHour = now.getHours(); // অথবা getUTCHours() যদি UTC টাইম কনসিডার করতে চান
+
+    // সকাল ৭:০০ টা থেকে সন্ধ্যা ৭:০০ টা (হিসাব: ৭টা থেকে ১৯টা) পর্যন্ত পিং করবে
+    if (currentHour >= 7 && currentHour < 19) {
+      const https = require('https');
+      // ⚠️ নিচে আপনার রেন্ডার সার্ভারের আসল লাইভ লিঙ্ক বসিয়ে দেবেন
+      const RENDER_APP_URL = 'https://greenland-school-db.onrender.com'; 
+
+      https.get(`${RENDER_APP_URL}/ping`, (res) => {
+        console.log(`⏰ Daytime Keep-Alive Ping sent. Status: ${res.statusCode}`);
+      }).on('error', (err) => {
+        console.log('Keep-Alive Ping failed:', err.message);
+      });
+    } else {
+      console.log('🌙 Night time (7 PM - 7 AM): Server rest mode, ping skipped.');
+    }
+  } catch (error) {
+    console.error('Time-Bound Ping Error:', error.message);
+  }
+}, 10 * 60 * 1000); // প্রতি ১০ মিনিট অন্তর চেক করবে
+
 
 // ==========================================
 // 🟢 Server Start
