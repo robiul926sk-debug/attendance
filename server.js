@@ -690,13 +690,13 @@ app.get('/ping', (req, res) => {
 setInterval(() => {
   try {
     const now = new Date();
-    // সার্ভারের বর্তমান স্থানীয় সময় বা UTC সময় অনুযায়ী ঘণ্টা বের করা (Render সাধারণত UTC তে চলে, তাই প্রয়োজনে স্থানীয় ঘণ্টা ধরে নিতে পারেন)
-    const currentHour = now.getHours(); // অথবা getUTCHours() যদি UTC টাইম কনসিডার করতে চান
+    // সার্ভারের বর্তমান স্থানীয় সময় বা UTC সময় অনুযায়ী ঘণ্টা বের করা 
+    const currentHour = now.getHours(); 
 
     // সকাল ৭:০০ টা থেকে সন্ধ্যা ৭:০০ টা (হিসাব: ৭টা থেকে ১৯টা) পর্যন্ত পিং করবে
     if (currentHour >= 7 && currentHour < 19) {
       const https = require('https');
-      // ⚠️ নিচে আপনার রেন্ডার সার্ভারের আসল লাইভ লিঙ্ক বসিয়ে দেবেন
+      // ⚠️ নিচে আপনার রেন্ডার সার্ভারের আসল লাইভ লিঙ্ক বসিয়ে দেবেন
       const RENDER_APP_URL = 'https://greenland-school-db.onrender.com'; 
 
       https.get(`${RENDER_APP_URL}/ping`, (res) => {
@@ -711,6 +711,43 @@ setInterval(() => {
     console.error('Time-Bound Ping Error:', error.message);
   }
 }, 10 * 60 * 1000); // প্রতি ১০ মিনিট অন্তর চেক করবে
+
+
+// ==========================================
+// 🟢 13. ADMIN SUBSCRIPTION PAYMENT HISTORY
+// ==========================================
+app.post('/api/users/:uid/subscription_payment', async (req, res) => {
+  try {
+    const Model = getDynamicModel('subscription_payments');
+    
+    const newPayment = new Model({
+      ...req.body,
+      schoolId: req.params.uid,
+      timestamp: new Date().getTime(), 
+      dateString: new Date().toISOString() 
+    });
+    
+    await newPayment.save();
+    
+    io.to(req.params.uid).emit('data_updated', { type: 'subscription_payments' });
+    
+    res.status(201).json({ success: true, id: newPayment._id.toString(), message: "Subscription payment recorded." });
+  } catch (err) { 
+    res.status(500).json({ error: err.message }); 
+  }
+});
+
+app.get('/api/users/:uid/subscription_payment', async (req, res) => {
+  try {
+    const Model = getDynamicModel('subscription_payments');
+    const data = await Model.find({ schoolId: req.params.uid, ...req.query }).sort({ timestamp: -1 });
+    
+    const formattedData = data.map(d => ({ id: d.docId || d._id.toString(), ...d._doc }));
+    res.json(formattedData);
+  } catch (err) { 
+    res.status(500).json({ error: err.message }); 
+  }
+});
 
 
 // ==========================================
