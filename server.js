@@ -681,40 +681,7 @@ app.delete('/api/users/:uid/wipe_session_data', async (req, res) => {
 
 
 // ==========================================
-// 🟢 12. TIME-BOUND KEEP-ALIVE PING (7 AM - 7 PM ONLY)
-// ==========================================
-app.get('/ping', (req, res) => {
-  res.status(200).send('Server is awake');
-});
-
-setInterval(() => {
-  try {
-    const now = new Date();
-    // সার্ভারের বর্তমান স্থানীয় সময় বা UTC সময় অনুযায়ী ঘণ্টা বের করা 
-    const currentHour = now.getHours(); 
-
-    // সকাল ৭:০০ টা থেকে সন্ধ্যা ৭:০০ টা (হিসাব: ৭টা থেকে ১৯টা) পর্যন্ত পিং করবে
-    if (currentHour >= 7 && currentHour < 19) {
-      const https = require('https');
-      // ⚠️ নিচে আপনার রেন্ডার সার্ভারের আসল লাইভ লিঙ্ক বসিয়ে দেবেন
-      const RENDER_APP_URL = 'https://greenland-school-db.onrender.com'; 
-
-      https.get(`${RENDER_APP_URL}/ping`, (res) => {
-        console.log(`⏰ Daytime Keep-Alive Ping sent. Status: ${res.statusCode}`);
-      }).on('error', (err) => {
-        console.log('Keep-Alive Ping failed:', err.message);
-      });
-    } else {
-      console.log('🌙 Night time (7 PM - 7 AM): Server rest mode, ping skipped.');
-    }
-  } catch (error) {
-    console.error('Time-Bound Ping Error:', error.message);
-  }
-}, 10 * 60 * 1000); // প্রতি ১০ মিনিট অন্তর চেক করবে
-
-
-// ==========================================
-// 🟢 13. ADMIN SUBSCRIPTION PAYMENT HISTORY
+// 🟢 12. ADMIN SUBSCRIPTION PAYMENT HISTORY
 // ==========================================
 app.post('/api/users/:uid/subscription_payment', async (req, res) => {
   try {
