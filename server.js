@@ -94,20 +94,52 @@ function decryptData(text) {
 }
 
 // ==========================================
-// 🟢 5. Models 
+// 🟢 5. Dynamic Model Generator & Explicit Models
 // ==========================================
+const getDynamicModel = (collectionName) => {
+  if (mongoose.models[collectionName]) return mongoose.models[collectionName];
+  const schema = new mongoose.Schema({}, { strict: false, versionKey: false });
+  return mongoose.model(collectionName, schema, collectionName);
+};
+
 const schoolSchema = new mongoose.Schema({ uid: String }, { strict: false });
-const School = mongoose.model('School', schoolSchema);
+const School = mongoose.models.School || mongoose.model('School', schoolSchema);
 
 const studentSchema = new mongoose.Schema({ schoolId: String, docId: String }, { strict: false });
-const Student = mongoose.model('Student', studentSchema, 'students');
+const Student = mongoose.models.Student || mongoose.model('Student', studentSchema, 'students');
 
 const teacherSchema = new mongoose.Schema({ schoolId: String, docId: String }, { strict: false });
-const Teacher = mongoose.model('Teacher', teacherSchema, 'teachers');
+const Teacher = mongoose.models.Teacher || mongoose.model('Teacher', teacherSchema, 'teachers');
 
 
 // ==========================================
-// 🟢 6. ADMIN & USER CHECKING
+// 🟢 6. DEVELOPER PANEL: GLOBAL SETTINGS
+// ==========================================
+const DeveloperSettings = getDynamicModel('developer_settings');
+
+app.get('/api/developer_settings/global', async (req, res) => {
+  try {
+    let settings = await DeveloperSettings.findOne({ docId: 'global' });
+    if (!settings) {
+      settings = new DeveloperSettings({ docId: 'global' });
+      await settings.save();
+    }
+    res.json(settings);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/developer_settings/global', async (req, res) => {
+  try {
+    const updated = await DeveloperSettings.findOneAndUpdate(
+      { docId: 'global' }, { $set: req.body }, { new: true, upsert: true }
+    );
+    io.emit('global_settings_updated', updated); // ব্রডকাস্ট
+    res.json(updated || {});
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ==========================================
+// 🟢 7. ADMIN & USER CHECKING
 // ==========================================
 
 app.get('/api/users', async (req, res) => {
@@ -120,6 +152,9 @@ app.get('/api/users', async (req, res) => {
 app.get('/api/users/:uid', async (req, res) => {
   try {
     let school = await School.findOne({ uid: req.params.uid });
+    if (!school) {
+      school = await School.findById(req.params.uid);
+    }
     if (school) {
       res.status(200).json(school); 
     } else {
@@ -169,12 +204,13 @@ app.put('/api/users/:uid', async (req, res) => {
     }
 
     const updated = await School.findOneAndUpdate(
-      { uid: req.params.uid }, 
+      { $or: [{ uid: req.params.uid }, { _id: req.params.uid }] }, 
       { $set: updateData }, 
       { new: true, upsert: true } 
     );
     
     io.to(req.params.uid).emit('data_updated', { type: 'school_data' });
+    io.emit('user_plan_updated', updated); // রিয়েল-টাইম আপডেট
     res.json({ success: true, data: updated });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -186,15 +222,20 @@ app.patch('/api/users/:uid', async (req, res) => {
       updateData.end_date = await calculateReadableEndDate(req.params.uid, updateData);
     }
 
-    const updated = await School.findOneAndUpdate({ uid: req.params.uid }, { $set: updateData }, { new: true, upsert: true });
+    const updated = await School.findOneAndUpdate(
+      { $or: [{ uid: req.params.uid }, { _id: req.params.uid }] }, 
+      { $set: updateData }, 
+      { new: true, upsert: true }
+    );
     io.to(req.params.uid).emit('data_updated', { type: 'school_data' });
+    io.emit('user_plan_updated', updated); // রিয়েল-টাইম আপডেট
     res.json(updated);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 
 // ==========================================
-// 🟢 7. MASTER LOGIN API 
+// 🟢 8. MASTER LOGIN API 
 // ==========================================
 app.post('/api/login', async (req, res) => {
   try {
@@ -240,14 +281,8 @@ app.post('/api/login', async (req, res) => {
 
 
 // ==========================================
-// 🟢 8. Dynamic Firebase-like Routing Engine (WITH CASCADING DELETE)
+// 🟢 9. Dynamic Firebase-like Routing Engine (WITH CASCADING DELETE)
 // ==========================================
-const getDynamicModel = (collectionName) => {
-  if (mongoose.models[collectionName]) return mongoose.models[collectionName];
-  const schema = new mongoose.Schema({}, { strict: false, versionKey: false });
-  return mongoose.model(collectionName, schema, collectionName);
-};
-
 app.get('/api/users/:uid/:collectionName', async (req, res) => {
   try {
     const Model = getDynamicModel(req.params.collectionName);
@@ -308,6 +343,9 @@ app.route('/api/users/:uid/:collectionName/:docId')
       let updateData = { ...req.body, schoolId: req.params.uid, docId: req.params.docId };
       let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
       
+      // Fallback: If it's a coupon, find by code
+      if (req.params.collectionName === 'my_coupons') query = { code: req.params.docId };
+
       if (updateData.govIdNumber) updateData.govIdNumber = encryptData(updateData.govIdNumber);
       if (updateData.aadhaar) updateData.aadhaar = encryptData(updateData.aadhaar);
 
@@ -433,7 +471,7 @@ app.delete('/api/users/:uid/:collectionName', async (req, res) => {
 
 
 // ==========================================
-// 🟢 9. Active Rooms (Live Exam & WebRTC)
+// 🟢 10. Active Rooms (Live Exam & WebRTC)
 // ==========================================
 const ActiveRoom = getDynamicModel('active_rooms');
 
@@ -532,7 +570,7 @@ app.delete('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res
 
 
 // ==========================================
-// 🟢 Global Developer Feedbacks
+// 🟢 11. Global Developer Feedbacks
 // ==========================================
 const Feedback = getDynamicModel('developer_feedbacks');
 app.get('/api/developer_feedbacks', async (req, res) => {
@@ -557,7 +595,7 @@ app.delete('/api/developer_feedbacks/:id', async (req, res) => {
 
 
 // ==========================================
-// 🟢 10. CRON JOB: AUTOMATIC ACCOUNT & RECYCLE BIN DELETION
+// 🟢 12. CRON JOB: AUTOMATIC ACCOUNT & RECYCLE BIN DELETION
 // ==========================================
 setInterval(async () => {
   try {
@@ -630,7 +668,7 @@ setInterval(async () => {
 
 
 // ==========================================
-// 🟢 11. WIPE SESSION DATA (NEW YEAR SETUP)
+// 🟢 13. WIPE SESSION DATA (NEW YEAR SETUP)
 // ==========================================
 app.delete('/api/users/:uid/wipe_session_data', async (req, res) => {
   try {
@@ -681,7 +719,7 @@ app.delete('/api/users/:uid/wipe_session_data', async (req, res) => {
 
 
 // ==========================================
-// 🟢 12. ADMIN SUBSCRIPTION PAYMENT HISTORY
+// 🟢 14. ADMIN SUBSCRIPTION PAYMENT HISTORY
 // ==========================================
 app.post('/api/users/:uid/subscription_payment', async (req, res) => {
   try {
