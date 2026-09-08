@@ -102,8 +102,9 @@ const getDynamicModel = (collectionName) => {
   return mongoose.model(collectionName, schema, collectionName);
 };
 
-const schoolSchema = new mongoose.Schema({ uid: String }, { strict: false });
-const School = mongoose.models.School || mongoose.model('School', schoolSchema);
+// 🟢 FIX: School কালেকশনের নাম ফিক্স করা হলো যাতে ঠিক 'School' ফোল্ডারেই ডেটা যায়
+const schoolSchema = new mongoose.Schema({ uid: String }, { strict: false, versionKey: false });
+const School = mongoose.models.School || mongoose.model('School', schoolSchema, 'School');
 
 const studentSchema = new mongoose.Schema({ schoolId: String, docId: String }, { strict: false });
 const Student = mongoose.models.Student || mongoose.model('Student', studentSchema, 'students');
@@ -283,29 +284,31 @@ app.post('/api/login', async (req, res) => {
 // ==========================================
 app.post('/api/register', async (req, res) => {
   try {
-    // ফ্লাটার অ্যাপ থেকে পাঠানো ইমেইল, পাসওয়ার্ড, এবং ইউজার আইডি এখানে সেভ হবে
     const { uid, email, password, role, ...otherData } = req.body;
     
-    if (role === "admin") {
-      let existingSchool = await School.findOne({ uid: uid });
-      if (existingSchool) {
-        return res.status(400).json({ error: "School/Admin already registered with this UID." });
-      }
-
-      const newSchool = new School({ 
-        uid, 
-        email, 
-        password, 
-        role, 
-        ...otherData 
-      });
-      
-      await newSchool.save();
-      return res.status(201).json({ success: true, data: newSchool });
+    // 🟢 FIX: এখন ডিফল্টভাবে সব ডেটা School কালেকশনে সেভ হবে
+    let existingSchool = await School.findOne({ uid: uid });
+    if (existingSchool) {
+      return res.status(400).json({ error: "School already registered with this UID." });
     }
+
+    const newSchool = new School({ 
+      uid: uid, 
+      email: email, 
+      password: password, 
+      role: role || "admin", // যদি role না আসে, ডিফল্ট admin বসিয়ে দেবে
+      ...otherData 
+    });
     
-    res.status(400).json({ error: "Only Admin registration is currently handled via this route." });
+    await newSchool.save();
+
+    // অ্যাপে কনফার্মেশন পাঠানো
+    io.to(uid).emit('data_updated', { type: 'school_data' });
+
+    return res.status(201).json({ success: true, data: newSchool });
+    
   } catch (error) { 
+    console.error("Registration Error:", error);
     res.status(500).json({ error: error.message }); 
   }
 });
