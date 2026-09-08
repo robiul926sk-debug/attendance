@@ -17,6 +17,100 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ==========================================
+// 🟢 SMART AUTO ENCRYPTION ENGINE (INJECTED)
+// ==========================================
+const GLOBAL_ENCRYPTION_KEY = Buffer.from('my32lengthsupersecretnooneknows1', 'utf8');
+const GLOBAL_IV = Buffer.alloc(16, 0); // 16 bytes zero IV (matches Flutter default)
+const AES_ALGO = 'aes-256-ctr'; // Matches Flutter encrypt package default
+
+const openFields = [
+  '_id', 'id', 'uid', 'roll', 'roomId', 'matchId', 'schoolId', 'docId', 'importId', 'callerId', 'targetId', 'teacherId', 'studentId',
+  'name', 'studentName', 'targetName', 'teacherName', 'fatherName', 'motherName', 'callerName', 'accurateCallerName',
+  'currentPlan', 'end_date', 'role', 'status', 'className', 'post', 'salaryType', 'activePlan', 'viewingPlan',
+  'question', 'options', 'correct', 'optA', 'optB', 'optC', 'optD',
+  'q', 'a', 'b', 'c', 'd', 'qC', 'opA', 'opB', 'opC', 'opD',
+  'q_raw', 'a_raw', 'b_raw', 'c_raw', 'd_raw', 'correct_raw',
+  'contributorId', 'timestamp', 'subject', 'totalQuestions', 'isSubmitted',
+  'type', 'isDeleted', 'isPaused', 'isLocked', 'isFreeMode', 'isUsed', 'isActive',
+  'date', 'dateKey', 'joinDate', 'sessionYear', 'code', 'expiredAt', 'createdAt', 'expiresAt', 'reviewedAt',
+  'exportCode', 'sourceUid'
+];
+
+function decryptGlobalPayload(data) {
+  if (Array.isArray(data)) {
+    return data.map(item => decryptGlobalPayload(item));
+  } else if (data !== null && typeof data === 'object') {
+    let decryptedData = {};
+    for (let key in data) {
+      let value = data[key];
+      if (typeof value === 'string' && value.startsWith('ENC:')) {
+        try {
+          let base64Data = value.substring(4);
+          let decipher = crypto.createDecipheriv(AES_ALGO, GLOBAL_ENCRYPTION_KEY, GLOBAL_IV);
+          let decryptedStr = decipher.update(base64Data, 'base64', 'utf8');
+          decryptedStr += decipher.final('utf8');
+          
+          try {
+            decryptedData[key] = JSON.parse(decryptedStr);
+          } catch (e) {
+            decryptedData[key] = decryptedStr;
+          }
+        } catch (e) {
+          decryptedData[key] = value;
+        }
+      } else {
+        decryptedData[key] = typeof value === 'object' ? decryptGlobalPayload(value) : value;
+      }
+    }
+    return decryptedData;
+  }
+  return data;
+}
+
+function encryptGlobalPayload(data) {
+  if (data == null) return data;
+  if (Array.isArray(data)) {
+    return data.map(item => encryptGlobalPayload(item));
+  } else if (typeof data === 'object') {
+    let plainData = data._doc ? data._doc : (typeof data.toObject === 'function' ? data.toObject() : data);
+    if (plainData instanceof Date) return plainData;
+
+    let encryptedData = {};
+    for (let key in plainData) {
+      let value = plainData[key];
+      if (value === null || openFields.includes(key)) {
+        encryptedData[key] = typeof value === 'object' ? encryptGlobalPayload(value) : value;
+      } else {
+        let stringValue = typeof value === 'string' ? value : JSON.stringify(value);
+        try {
+          let cipher = crypto.createCipheriv(AES_ALGO, GLOBAL_ENCRYPTION_KEY, GLOBAL_IV);
+          let encrypted = cipher.update(stringValue, 'utf8', 'base64');
+          encrypted += cipher.final('base64');
+          encryptedData[key] = 'ENC:' + encrypted;
+        } catch (e) {
+          encryptedData[key] = value;
+        }
+      }
+    }
+    return encryptedData;
+  }
+  return data;
+}
+
+// 🟢 Global API Interceptor
+app.use((req, res, next) => {
+  if (req.body && typeof req.body === 'object') {
+    req.body = decryptGlobalPayload(req.body);
+  }
+  const originalJson = res.json;
+  res.json = function (body) {
+    let encryptedBody = encryptGlobalPayload(body);
+    return originalJson.call(this, encryptedBody);
+  };
+  next();
+});
+
+// ==========================================
 // 🟢 2. MongoDB Cloud Connection
 // ==========================================
 mongoose.connect('mongodb+srv://robiul926sk_db_user:X35cF8uk3qXGabH8@cluster0.axgj0zh.mongodb.net/greenland_school_db?appName=Cluster0')
