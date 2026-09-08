@@ -13,102 +13,8 @@ const server = http.createServer(app);
 // 🟢 1. Middleware Setup
 // ==========================================
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); 
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
-
-// ==========================================
-// 🟢 SMART AUTO ENCRYPTION ENGINE (INJECTED)
-// ==========================================
-const GLOBAL_ENCRYPTION_KEY = Buffer.from('my32lengthsupersecretnooneknows1', 'utf8');
-const GLOBAL_IV = Buffer.alloc(16, 0); // 16 bytes zero IV (matches Flutter default)
-const AES_ALGO = 'aes-256-ctr'; // Matches Flutter encrypt package default
-
-const openFields = [
-  '_id', 'id', 'uid', 'roll', 'roomId', 'matchId', 'schoolId', 'docId', 'importId', 'callerId', 'targetId', 'teacherId', 'studentId',
-  'name', 'studentName', 'targetName', 'teacherName', 'fatherName', 'motherName', 'callerName', 'accurateCallerName',
-  'currentPlan', 'end_date', 'role', 'status', 'className', 'post', 'salaryType', 'activePlan', 'viewingPlan',
-  'question', 'options', 'correct', 'optA', 'optB', 'optC', 'optD',
-  'q', 'a', 'b', 'c', 'd', 'qC', 'opA', 'opB', 'opC', 'opD',
-  'q_raw', 'a_raw', 'b_raw', 'c_raw', 'd_raw', 'correct_raw',
-  'contributorId', 'timestamp', 'subject', 'totalQuestions', 'isSubmitted',
-  'type', 'isDeleted', 'isPaused', 'isLocked', 'isFreeMode', 'isUsed', 'isActive',
-  'date', 'dateKey', 'joinDate', 'sessionYear', 'code', 'expiredAt', 'createdAt', 'expiresAt', 'reviewedAt',
-  'exportCode', 'sourceUid'
-];
-
-function decryptGlobalPayload(data) {
-  if (Array.isArray(data)) {
-    return data.map(item => decryptGlobalPayload(item));
-  } else if (data !== null && typeof data === 'object') {
-    let decryptedData = {};
-    for (let key in data) {
-      let value = data[key];
-      if (typeof value === 'string' && value.startsWith('ENC:')) {
-        try {
-          let base64Data = value.substring(4);
-          let decipher = crypto.createDecipheriv(AES_ALGO, GLOBAL_ENCRYPTION_KEY, GLOBAL_IV);
-          let decryptedStr = decipher.update(base64Data, 'base64', 'utf8');
-          decryptedStr += decipher.final('utf8');
-          
-          try {
-            decryptedData[key] = JSON.parse(decryptedStr);
-          } catch (e) {
-            decryptedData[key] = decryptedStr;
-          }
-        } catch (e) {
-          decryptedData[key] = value;
-        }
-      } else {
-        decryptedData[key] = typeof value === 'object' ? decryptGlobalPayload(value) : value;
-      }
-    }
-    return decryptedData;
-  }
-  return data;
-}
-
-function encryptGlobalPayload(data) {
-  if (data == null) return data;
-  if (Array.isArray(data)) {
-    return data.map(item => encryptGlobalPayload(item));
-  } else if (typeof data === 'object') {
-    let plainData = data._doc ? data._doc : (typeof data.toObject === 'function' ? data.toObject() : data);
-    if (plainData instanceof Date) return plainData;
-
-    let encryptedData = {};
-    for (let key in plainData) {
-      let value = plainData[key];
-      if (value === null || openFields.includes(key)) {
-        encryptedData[key] = typeof value === 'object' ? encryptGlobalPayload(value) : value;
-      } else {
-        let stringValue = typeof value === 'string' ? value : JSON.stringify(value);
-        try {
-          let cipher = crypto.createCipheriv(AES_ALGO, GLOBAL_ENCRYPTION_KEY, GLOBAL_IV);
-          let encrypted = cipher.update(stringValue, 'utf8', 'base64');
-          encrypted += cipher.final('base64');
-          encryptedData[key] = 'ENC:' + encrypted;
-        } catch (e) {
-          encryptedData[key] = value;
-        }
-      }
-    }
-    return encryptedData;
-  }
-  return data;
-}
-
-// 🟢 Global API Interceptor
-app.use((req, res, next) => {
-  if (req.body && typeof req.body === 'object') {
-    req.body = decryptGlobalPayload(req.body);
-  }
-  const originalJson = res.json;
-  res.json = function (body) {
-    let encryptedBody = encryptGlobalPayload(body);
-    return originalJson.call(this, encryptedBody);
-  };
-  next();
-});
 
 // ==========================================
 // 🟢 2. MongoDB Cloud Connection
@@ -136,34 +42,34 @@ const io = new Server(server, {
 io.on('connection', (socket) => {
   console.log('🔵 New User Connected to Socket:', socket.id);
   
-  socket.on('join_room', (roomId) => { 
-    socket.join(roomId); 
+  socket.on('join_room', (roomId) => {
+    socket.join(roomId);
     console.log(`User joined room: ${roomId}`);
   });
 
-  socket.on('join_school_room', (schoolId) => { 
-    socket.join(schoolId); 
+  socket.on('join_school_room', (schoolId) => {
+    socket.join(schoolId);
     console.log(`User joined school room for live sync: ${schoolId}`);
   });
 
-  socket.on('send_message', (data) => { 
-    io.to(data.roomId).emit('receive_message', data); 
+  socket.on('send_message', (data) => {
+    io.to(data.roomId).emit('receive_message', data);
   });
 
-  socket.on('disconnect', () => { 
-    console.log('🔴 User Disconnected:', socket.id); 
+  socket.on('disconnect', () => {
+    console.log('🔴 User Disconnected:', socket.id);
   });
 });
 
 // ==========================================
 // 🟢 4. Security & Encryption (Govt IDs)
 // ==========================================
-const ENCRYPTION_KEY = crypto.randomBytes(32); 
+const ENCRYPTION_KEY = crypto.randomBytes(32);
 const IV_LENGTH = 16;
 
 function encryptData(text) {
   if (!text) return text;
-  if (text.includes(':') && text.length > 32) return text; 
+  if (text.includes(':') && text.length > 32) return text;
   
   let iv = crypto.randomBytes(IV_LENGTH);
   let cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY), iv);
@@ -183,7 +89,7 @@ function decryptData(text) {
     decrypted = Buffer.concat([decrypted, decipher.final()]);
     return decrypted.toString();
   } catch (error) {
-    return text; 
+    return text;
   }
 }
 
@@ -239,7 +145,7 @@ app.patch('/api/developer_settings/global', async (req, res) => {
 app.get('/api/users', async (req, res) => {
   try {
     const users = await School.find(req.query);
-    res.status(200).json(users); 
+    res.status(200).json(users);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -250,9 +156,9 @@ app.get('/api/users/:uid', async (req, res) => {
       school = await School.findById(req.params.uid);
     }
     if (school) {
-      res.status(200).json(school); 
+      res.status(200).json(school);
     } else {
-      res.status(404).json({ message: "User not found" }); 
+      res.status(404).json({ message: "User not found" });
     }
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -262,29 +168,29 @@ async function calculateReadableEndDate(uid, updateData) {
   if (updateData.end_date) {
     let parsedDate = new Date(updateData.end_date);
     if (!isNaN(parsedDate)) {
-      return parsedDate.toISOString(); 
+      return parsedDate.toISOString();
     }
   }
 
   if (updateData.currentPlan) {
     let planName = updateData.currentPlan.toLowerCase();
-    let addedDays = 30; 
+    let addedDays = 30;
     if (planName.includes("7 days") || planName.includes("week") || planName.includes("49")) addedDays = 7;
     if (planName.includes("3 months")) addedDays = 90;
     if (planName.includes("1 year") || planName.includes("1499")) addedDays = 365;
 
     const currentSchool = await School.findOne({ uid: uid });
-    let baseDate = new Date(); 
+    let baseDate = new Date();
 
     if (currentSchool && currentSchool.end_date) {
       let existingDate = new Date(currentSchool.end_date);
       if (!isNaN(existingDate) && existingDate > baseDate) {
-        baseDate = existingDate; 
+        baseDate = existingDate;
       }
     }
 
     baseDate.setDate(baseDate.getDate() + addedDays);
-    return baseDate.toISOString(); 
+    return baseDate.toISOString();
   }
 
   return updateData.end_date;
@@ -298,9 +204,9 @@ app.put('/api/users/:uid', async (req, res) => {
     }
 
     const updated = await School.findOneAndUpdate(
-      { $or: [{ uid: req.params.uid }, { _id: req.params.uid }] }, 
-      { $set: updateData }, 
-      { new: true, upsert: true } 
+      { $or: [{ uid: req.params.uid }, { _id: req.params.uid }] },
+      { $set: updateData },
+      { new: true, upsert: true }
     );
     
     io.to(req.params.uid).emit('data_updated', { type: 'school_data' });
@@ -317,8 +223,8 @@ app.patch('/api/users/:uid', async (req, res) => {
     }
 
     const updated = await School.findOneAndUpdate(
-      { $or: [{ uid: req.params.uid }, { _id: req.params.uid }] }, 
-      { $set: updateData }, 
+      { $or: [{ uid: req.params.uid }, { _id: req.params.uid }] },
+      { $set: updateData },
       { new: true, upsert: true }
     );
     io.to(req.params.uid).emit('data_updated', { type: 'school_data' });
@@ -329,7 +235,7 @@ app.patch('/api/users/:uid', async (req, res) => {
 
 
 // ==========================================
-// 🟢 8. MASTER LOGIN API 
+// 🟢 8. MASTER LOGIN API
 // ==========================================
 app.post('/api/login', async (req, res) => {
   try {
@@ -380,7 +286,7 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/users/:uid/:collectionName', async (req, res) => {
   try {
     const Model = getDynamicModel(req.params.collectionName);
-    const filter = { schoolId: req.params.uid, ...req.query }; 
+    const filter = { schoolId: req.params.uid, ...req.query };
     const data = await Model.find(filter);
     
     const formattedData = data.map(d => {
@@ -444,8 +350,8 @@ app.route('/api/users/:uid/:collectionName/:docId')
       if (updateData.aadhaar) updateData.aadhaar = encryptData(updateData.aadhaar);
 
       const updated = await Model.findOneAndUpdate(
-        query, 
-        updateData, 
+        query,
+        updateData,
         { new: true, upsert: true }
       );
       
@@ -471,14 +377,14 @@ app.route('/api/users/:uid/:collectionName/:docId')
             if (existingDoc.targetId) io.to(existingDoc.targetId).emit('call_ended', { docId: req.params.docId });
           }
           return res.json({ success: true, message: "Rejected and History Deleted" });
-        } 
+        }
         else if (req.body.status === 'Ended' || req.body.status === 'Missed') {
           if (existingDoc) {
             let caller = existingDoc.callerId || existingDoc.studentId;
             if (caller) io.to(caller).emit('call_ended', { docId: req.params.docId });
             if (existingDoc.targetId) io.to(existingDoc.targetId).emit('call_ended', { docId: req.params.docId });
           }
-        } 
+        }
         else if (req.body.status === 'Accepted' || req.body.status === 'In Call') {
           if (existingDoc) {
             let caller = existingDoc.callerId || existingDoc.studentId;
@@ -503,8 +409,8 @@ app.route('/api/users/:uid/:collectionName/:docId')
       if (Object.keys(unsetQuery.$unset).length > 0) finalUpdate = { ...finalUpdate, ...unsetQuery };
 
       const updated = await Model.findOneAndUpdate(
-        query, 
-        finalUpdate, 
+        query,
+        finalUpdate,
         { new: true, upsert: true }
       );
       
@@ -521,13 +427,13 @@ app.route('/api/users/:uid/:collectionName/:docId')
       
       // 🟢 🟢 ম্যাজিক ফিক্স: ডিপ ক্লিনিং (Cascaded Delete) - জঞ্জাল সাফাই 🟢 🟢
       if (deletedDoc) {
-         if (req.params.collectionName === 'students') { 
+         if (req.params.collectionName === 'students') {
              let roll = deletedDoc.roll || deletedDoc.docId.replace('student_', '');
              await getDynamicModel('doubts').deleteMany({ studentRoll: roll, schoolId: req.params.uid });
              await getDynamicModel('pending_payments').deleteMany({ studentRoll: roll, schoolId: req.params.uid });
              await getDynamicModel('call_requests').deleteMany({ $or: [{ studentId: roll }, { targetId: roll }, { callerId: roll }], schoolId: req.params.uid });
              await getDynamicModel('pending_students').deleteMany({ 'studentData.roll': roll, schoolId: req.params.uid });
-         } 
+         }
          else if (req.params.collectionName === 'teachers') {
              let tId = deletedDoc.docId || deletedDoc.id || deletedDoc._id.toString();
              await getDynamicModel('doubts').deleteMany({ targetTeacherId: tId, schoolId: req.params.uid });
@@ -558,8 +464,8 @@ app.delete('/api/users/:uid/:collectionName', async (req, res) => {
     
     io.to(req.params.uid).emit('data_updated', { type: req.params.collectionName });
     res.json({ success: true, message: "Bulk Delete Successful!" });
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -573,7 +479,7 @@ app.post('/api/active_rooms', async (req, res) => {
   try {
     const newRoom = new ActiveRoom({ ...req.body, docId: req.body.roomId });
     await newRoom.save();
-    io.emit('room_updated', newRoom.docId); 
+    io.emit('room_updated', newRoom.docId);
     res.status(201).json({ success: true, id: newRoom.docId });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -721,7 +627,7 @@ setInterval(async () => {
     }
 
     // [খ] রিসাইকেল বিনের ৭ দিনের অটো-ক্লিনিং ইঞ্জিন
-    const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000); 
+    const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000);
     const modelsToCheck = ['students', 'teachers', 'staffs'];
 
     for (let collection of modelsToCheck) {
@@ -743,7 +649,7 @@ setInterval(async () => {
               await getDynamicModel('pending_payments').deleteMany({ studentRoll: roll, schoolId: doc.schoolId });
               await getDynamicModel('call_requests').deleteMany({ $or: [{ studentId: roll }, { targetId: roll }, { callerId: roll }], schoolId: doc.schoolId });
               await getDynamicModel('pending_students').deleteMany({ 'studentData.roll': roll, schoolId: doc.schoolId });
-            } 
+            }
             else if (collection === 'teachers') {
               let tId = doc.docId || doc.id;
               await getDynamicModel('doubts').deleteMany({ targetTeacherId: tId, schoolId: doc.schoolId });
@@ -767,7 +673,7 @@ setInterval(async () => {
 app.delete('/api/users/:uid/wipe_session_data', async (req, res) => {
   try {
     const uid = req.params.uid;
-    const clearLedger = req.query.clearLedger === 'true'; 
+    const clearLedger = req.query.clearLedger === 'true';
 
     console.log(`🧹 Wiping Session Data for School UID: ${uid} | Clear Ledger: ${clearLedger}`);
 
@@ -822,8 +728,8 @@ app.post('/api/users/:uid/subscription_payment', async (req, res) => {
     const newPayment = new Model({
       ...req.body,
       schoolId: req.params.uid,
-      timestamp: new Date().getTime(), 
-      dateString: new Date().toISOString() 
+      timestamp: new Date().getTime(),
+      dateString: new Date().toISOString()
     });
     
     await newPayment.save();
@@ -831,8 +737,8 @@ app.post('/api/users/:uid/subscription_payment', async (req, res) => {
     io.to(req.params.uid).emit('data_updated', { type: 'subscription_payments' });
     
     res.status(201).json({ success: true, id: newPayment._id.toString(), message: "Subscription payment recorded." });
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -843,8 +749,8 @@ app.get('/api/users/:uid/subscription_payment', async (req, res) => {
     
     const formattedData = data.map(d => ({ id: d.docId || d._id.toString(), ...d._doc }));
     res.json(formattedData);
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
