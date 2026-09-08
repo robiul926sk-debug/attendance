@@ -133,7 +133,7 @@ app.patch('/api/developer_settings/global', async (req, res) => {
     const updated = await DeveloperSettings.findOneAndUpdate(
       { docId: 'global' }, { $set: req.body }, { new: true, upsert: true }
     );
-    io.emit('global_settings_updated', updated); // ব্রডকাস্ট
+    io.emit('global_settings_updated', updated); 
     res.json(updated || {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -163,7 +163,6 @@ app.get('/api/users/:uid', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🔹 Date calculation helper
 async function calculateReadableEndDate(uid, updateData) {
   if (updateData.end_date) {
     let parsedDate = new Date(updateData.end_date);
@@ -210,7 +209,7 @@ app.put('/api/users/:uid', async (req, res) => {
     );
     
     io.to(req.params.uid).emit('data_updated', { type: 'school_data' });
-    io.emit('user_plan_updated', updated); // রিয়েল-টাইম আপডেট
+    io.emit('user_plan_updated', updated); 
     res.json({ success: true, data: updated });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -228,7 +227,7 @@ app.patch('/api/users/:uid', async (req, res) => {
       { new: true, upsert: true }
     );
     io.to(req.params.uid).emit('data_updated', { type: 'school_data' });
-    io.emit('user_plan_updated', updated); // রিয়েল-টাইম আপডেট
+    io.emit('user_plan_updated', updated); 
     res.json(updated);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -279,6 +278,38 @@ app.post('/api/login', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
+// ==========================================
+// 🟢 8.5. MASTER REGISTER API (NEWLY ADDED)
+// ==========================================
+app.post('/api/register', async (req, res) => {
+  try {
+    // ফ্লাটার অ্যাপ থেকে পাঠানো ইমেইল, পাসওয়ার্ড, এবং ইউজার আইডি এখানে সেভ হবে
+    const { uid, email, password, role, ...otherData } = req.body;
+    
+    if (role === "admin") {
+      let existingSchool = await School.findOne({ uid: uid });
+      if (existingSchool) {
+        return res.status(400).json({ error: "School/Admin already registered with this UID." });
+      }
+
+      const newSchool = new School({ 
+        uid, 
+        email, 
+        password, 
+        role, 
+        ...otherData 
+      });
+      
+      await newSchool.save();
+      return res.status(201).json({ success: true, data: newSchool });
+    }
+    
+    res.status(400).json({ error: "Only Admin registration is currently handled via this route." });
+  } catch (error) { 
+    res.status(500).json({ error: error.message }); 
+  }
+});
+
 
 // ==========================================
 // 🟢 9. Dynamic Firebase-like Routing Engine (WITH CASCADING DELETE)
@@ -311,7 +342,6 @@ app.post('/api/users/:uid/:collectionName', async (req, res) => {
     const newDoc = new Model(dataToSave);
     await newDoc.save();
     
-    // 🟢 ম্যাজিক ফিক্স: ডাইরেক্ট কল করলে সকেটে ইনকামিং সিগন্যাল যাবে
     if (req.params.collectionName === 'call_requests' && dataToSave.status === 'Called Now') {
       io.to(dataToSave.targetId).emit('incoming_call', { ...dataToSave, id: newDoc._id.toString() });
     }
@@ -343,7 +373,6 @@ app.route('/api/users/:uid/:collectionName/:docId')
       let updateData = { ...req.body, schoolId: req.params.uid, docId: req.params.docId };
       let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
       
-      // Fallback: If it's a coupon, find by code
       if (req.params.collectionName === 'my_coupons') query = { code: req.params.docId };
 
       if (updateData.govIdNumber) updateData.govIdNumber = encryptData(updateData.govIdNumber);
@@ -425,7 +454,6 @@ app.route('/api/users/:uid/:collectionName/:docId')
       
       const deletedDoc = await Model.findOneAndDelete(query);
       
-      // 🟢 🟢 ম্যাজিক ফিক্স: ডিপ ক্লিনিং (Cascaded Delete) - জঞ্জাল সাফাই 🟢 🟢
       if (deletedDoc) {
          if (req.params.collectionName === 'students') {
              let roll = deletedDoc.roll || deletedDoc.docId.replace('student_', '');
@@ -448,7 +476,6 @@ app.route('/api/users/:uid/:collectionName/:docId')
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-// 🟢 🟢 ম্যাজিক ফিক্স: হোমওয়ার্ক বা যেকোনো ডেটা একসাথে অনেকগুলো ডিলিট করার রুট
 app.delete('/api/users/:uid/:collectionName', async (req, res) => {
   try {
     if (req.params.collectionName === 'homework' && req.query.subject && req.query.className) {
@@ -514,7 +541,6 @@ app.delete('/api/active_rooms/:roomId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// --- Room Sub-collections ---
 app.get('/api/active_rooms/:roomId/:subCollection', async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
@@ -601,7 +627,6 @@ setInterval(async () => {
   try {
     const now = Date.now();
     
-    // [ক] স্কুলের অ্যাকাউন্ট ডিলিট লজিক
     const schoolsToDelete = await School.find({
       status: 'pending_deletion',
       scheduledDeletionTime: { $lte: now }
@@ -619,14 +644,12 @@ setInterval(async () => {
       await getDynamicModel('attendance_requests').deleteMany({ schoolId: uid });
       await getDynamicModel('call_requests').deleteMany({ schoolId: uid });
       
-      // হোমওয়ার্ক ও লাইভ ডাউটস ডিলিট
       await getDynamicModel('homework').deleteMany({ schoolId: uid });
       await getDynamicModel('doubts').deleteMany({ schoolId: uid });
 
       console.log(`✅ Completely erased all data for ${uid}.`);
     }
 
-    // [খ] রিসাইকেল বিনের ৭ দিনের অটো-ক্লিনিং ইঞ্জিন
     const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000);
     const modelsToCheck = ['students', 'teachers', 'staffs'];
 
@@ -664,7 +687,7 @@ setInterval(async () => {
   } catch (error) {
     console.error("❌ Cron Job Error:", error.message);
   }
-}, 60 * 60 * 1000); // 1 Hour Interval
+}, 60 * 60 * 1000); 
 
 
 // ==========================================
