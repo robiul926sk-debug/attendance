@@ -1,8 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
 const http = require('http');
 const { Server } = require('socket.io');
 
@@ -62,36 +60,10 @@ io.on('connection', (socket) => {
 });
 
 // ==========================================
-// 🟢 4. Security & Encryption (Govt IDs)
+// 🟢 4. Security & Encryption
 // ==========================================
-const ENCRYPTION_KEY = crypto.randomBytes(32);
-const IV_LENGTH = 16;
-
-function encryptData(text) {
-  if (!text) return text;
-  if (text.includes(':') && text.length > 32) return text;
-  
-  let iv = crypto.randomBytes(IV_LENGTH);
-  let cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY), iv);
-  let encrypted = cipher.update(text);
-  encrypted = Buffer.concat([encrypted, cipher.final()]);
-  return iv.toString('hex') + ':' + encrypted.toString('hex');
-}
-
-function decryptData(text) {
-  if (!text || !text.includes(':')) return text;
-  try {
-    let textParts = text.split(':');
-    let iv = Buffer.from(textParts.shift(), 'hex');
-    let encryptedText = Buffer.from(textParts.join(':'), 'hex');
-    let decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY), iv);
-    let decrypted = decipher.update(encryptedText);
-    decrypted = Buffer.concat([decrypted, decipher.final()]);
-    return decrypted.toString();
-  } catch (error) {
-    return text;
-  }
-}
+// 🔴 ম্যাজিক ফিক্স: আপনি ফ্লাটার থেকে এনক্রিপশন সরিয়ে দিয়েছেন, তাই সার্ভার থেকেও এনক্রিপশন ফাংশন সম্পূর্ণভাবে মুছে দেওয়া হলো!
+// এতে প্রোফাইলে আধার বা ফাদার নেম আর ফাঁকা দেখাবে না।
 
 // ==========================================
 // 🟢 5. Dynamic Model Generator & Explicit Models
@@ -102,7 +74,6 @@ const getDynamicModel = (collectionName) => {
   return mongoose.model(collectionName, schema, collectionName);
 };
 
-// 🟢 FIX: School কালেকশনের নাম ফিক্স করা হলো যাতে ঠিক 'School' ফোল্ডারেই ডেটা যায়
 const schoolSchema = new mongoose.Schema({ uid: String }, { strict: false, versionKey: false });
 const School = mongoose.models.School || mongoose.model('School', schoolSchema, 'School');
 
@@ -195,15 +166,20 @@ async function calculateReadableEndDate(uid, updateData) {
 
   return updateData.end_date;
 }
+
 app.put('/api/users/:uid', async (req, res) => {
   try {
     let updateData = { ...req.body };
+    
+    // 🟢 ম্যাজিক ফিক্স: রেজিস্ট্রেশনের সময় uid যেন ১০০% সেভ হয় তার গ্যারান্টি!
+    updateData.uid = req.params.uid;
+
     if (updateData.end_date || updateData.currentPlan) {
       updateData.end_date = await calculateReadableEndDate(req.params.uid, updateData);
     }
 
     const updated = await School.findOneAndUpdate(
-      { uid: req.params.uid }, // 🟢 $or রিমুভ করে সরাসরি uid দিয়ে খোঁজা হচ্ছে
+      { uid: req.params.uid }, 
       { $set: updateData }, 
       { new: true, upsert: true } 
     );
@@ -226,7 +202,7 @@ app.patch('/api/users/:uid', async (req, res) => {
     }
 
     const updated = await School.findOneAndUpdate(
-      { uid: req.params.uid }, // 🟢 $or রিমুভ করা হলো
+      { uid: req.params.uid }, 
       { $set: updateData }, 
       { new: true, upsert: true }
     );
@@ -265,7 +241,6 @@ app.post('/api/login', async (req, res) => {
       if (student.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
       if (password !== student.password) return res.status(400).json({ error: "Invalid Password!" });
       
-      if (student.govIdNumber) student.govIdNumber = decryptData(student.govIdNumber);
       return res.json({ success: true, data: student });
     }
 
@@ -275,7 +250,6 @@ app.post('/api/login', async (req, res) => {
       if (teacher.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
       if (password !== teacher.password) return res.status(400).json({ error: "Invalid Password!" });
       
-      if (teacher.govIdNumber) teacher.govIdNumber = decryptData(teacher.govIdNumber);
       return res.json({ success: true, data: teacher });
     }
     res.status(400).json({ error: "Invalid Role!" });
@@ -283,13 +257,12 @@ app.post('/api/login', async (req, res) => {
 });
 
 // ==========================================
-// 🟢 8.5. MASTER REGISTER API (NEWLY ADDED)
+// 🟢 8.5. MASTER REGISTER API
 // ==========================================
 app.post('/api/register', async (req, res) => {
   try {
     const { uid, email, password, role, ...otherData } = req.body;
     
-    // 🟢 FIX: এখন ডিফল্টভাবে সব ডেটা School কালেকশনে সেভ হবে
     let existingSchool = await School.findOne({ uid: uid });
     if (existingSchool) {
       return res.status(400).json({ error: "School already registered with this UID." });
@@ -299,15 +272,13 @@ app.post('/api/register', async (req, res) => {
       uid: uid, 
       email: email, 
       password: password, 
-      role: role || "admin", // যদি role না আসে, ডিফল্ট admin বসিয়ে দেবে
+      role: role || "admin", 
       ...otherData 
     });
     
     await newSchool.save();
 
-    // অ্যাপে কনফার্মেশন পাঠানো
     io.to(uid).emit('data_updated', { type: 'school_data' });
-
     return res.status(201).json({ success: true, data: newSchool });
     
   } catch (error) { 
@@ -318,7 +289,7 @@ app.post('/api/register', async (req, res) => {
 
 
 // ==========================================
-// 🟢 9. Dynamic Firebase-like Routing Engine (WITH CASCADING DELETE)
+// 🟢 9. Dynamic Firebase-like Routing Engine
 // ==========================================
 app.get('/api/users/:uid/:collectionName', async (req, res) => {
   try {
@@ -328,9 +299,7 @@ app.get('/api/users/:uid/:collectionName', async (req, res) => {
     
     const formattedData = data.map(d => {
       let obj = { id: d.docId || d._id.toString(), ...d._doc };
-      if (obj.govIdNumber) obj.govIdNumber = decryptData(obj.govIdNumber);
-      if (obj.aadhaar) obj.aadhaar = decryptData(obj.aadhaar);
-      return obj;
+      return obj; // 🔴 এনক্রিপশন রিমুভড
     });
 
     res.json(formattedData);
@@ -341,9 +310,6 @@ app.post('/api/users/:uid/:collectionName', async (req, res) => {
   try {
     const Model = getDynamicModel(req.params.collectionName);
     let dataToSave = { ...req.body, schoolId: req.params.uid };
-    
-    if (dataToSave.govIdNumber) dataToSave.govIdNumber = encryptData(dataToSave.govIdNumber);
-    if (dataToSave.aadhaar) dataToSave.aadhaar = encryptData(dataToSave.aadhaar);
     
     const newDoc = new Model(dataToSave);
     await newDoc.save();
@@ -366,9 +332,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
       
       if (data) {
         let obj = { id: data.docId || data._id.toString(), ...data._doc };
-        if (obj.govIdNumber) obj.govIdNumber = decryptData(obj.govIdNumber);
-        if (obj.aadhaar) obj.aadhaar = decryptData(obj.aadhaar);
-        res.json(obj);
+        res.json(obj); // 🔴 এনক্রিপশন রিমুভড
       }
       else res.status(404).json({ error: "Not Found" });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -381,12 +345,9 @@ app.route('/api/users/:uid/:collectionName/:docId')
       
       if (req.params.collectionName === 'my_coupons') query = { code: req.params.docId };
 
-      if (updateData.govIdNumber) updateData.govIdNumber = encryptData(updateData.govIdNumber);
-      if (updateData.aadhaar) updateData.aadhaar = encryptData(updateData.aadhaar);
-
       const updated = await Model.findOneAndUpdate(
         query,
-        { $set: updateData }, // 🟢 ম্যাজিক ফিক্স: $set অ্যাড করা হলো যাতে কোনো ডেটা হারিয়ে না যায় এবং সব ফিল্ড সেভ হয়
+        { $set: updateData }, 
         { new: true, upsert: true }
       );
       
@@ -430,13 +391,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
 
       for (let key in req.body) {
         if (req.body[key] === null) unsetQuery.$unset[key] = "";
-        else {
-          if (key === 'govIdNumber' || key === 'aadhaar') {
-            updateQuery.$set[key] = encryptData(req.body[key]);
-          } else {
-            updateQuery.$set[key] = req.body[key];
-          }
-        }
+        else updateQuery.$set[key] = req.body[key]; // 🔴 এনক্রিপশন রিমুভড
       }
 
       let finalUpdate = {};
