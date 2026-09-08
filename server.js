@@ -195,7 +195,6 @@ async function calculateReadableEndDate(uid, updateData) {
 
   return updateData.end_date;
 }
-
 app.put('/api/users/:uid', async (req, res) => {
   try {
     let updateData = { ...req.body };
@@ -204,9 +203,9 @@ app.put('/api/users/:uid', async (req, res) => {
     }
 
     const updated = await School.findOneAndUpdate(
-      { $or: [{ uid: req.params.uid }, { _id: req.params.uid }] },
-      { $set: updateData },
-      { new: true, upsert: true }
+      { uid: req.params.uid }, // 🟢 $or রিমুভ করে সরাসরি uid দিয়ে খোঁজা হচ্ছে
+      { $set: updateData }, 
+      { new: true, upsert: true } 
     );
     
     io.to(req.params.uid).emit('data_updated', { type: 'school_data' });
@@ -218,13 +217,17 @@ app.put('/api/users/:uid', async (req, res) => {
 app.patch('/api/users/:uid', async (req, res) => {
   try {
     let updateData = { ...req.body };
+    
+    // 🟢 ম্যাজিক ফিক্স: এখানেও uid ফোর্স করে সেভ করানো হলো
+    updateData.uid = req.params.uid;
+
     if (updateData.end_date || updateData.currentPlan) {
       updateData.end_date = await calculateReadableEndDate(req.params.uid, updateData);
     }
 
     const updated = await School.findOneAndUpdate(
-      { $or: [{ uid: req.params.uid }, { _id: req.params.uid }] },
-      { $set: updateData },
+      { uid: req.params.uid }, // 🟢 $or রিমুভ করা হলো
+      { $set: updateData }, 
       { new: true, upsert: true }
     );
     io.to(req.params.uid).emit('data_updated', { type: 'school_data' });
@@ -383,7 +386,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
 
       const updated = await Model.findOneAndUpdate(
         query,
-        updateData,
+        { $set: updateData }, // 🟢 ম্যাজিক ফিক্স: $set অ্যাড করা হলো যাতে কোনো ডেটা হারিয়ে না যায় এবং সব ফিল্ড সেভ হয়
         { new: true, upsert: true }
       );
       
