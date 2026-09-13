@@ -75,7 +75,7 @@ const getDynamicModel = (collectionName) => {
 };
 
 const schoolSchema = new mongoose.Schema({ uid: String }, { strict: false, versionKey: false });
-const School = mongoose.models.School || mongoose.model('School', schoolSchema, 'School');
+const School = mongoose.models.School || mongoose.model('School', schoolSchema, 'schools'); //
 
 const studentSchema = new mongoose.Schema({ schoolId: String, docId: String }, { strict: false });
 const Student = mongoose.models.Student || mongoose.model('Student', studentSchema, 'students');
@@ -108,6 +108,16 @@ app.patch('/api/developer_settings/global', async (req, res) => {
     io.emit('global_settings_updated', updated); 
     res.json(updated || {});
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// 🟢 Settings ফোল্ডার থেকে ডেটা ফেচ করার API
+app.get('/api/settings', async (req, res) => {
+  try {
+    // আপনার ডাটাবেসের settings কালেকশন থেকে সব ডেটা তুলবে
+    const settingsData = await db.collection('settings').find({}).toArray();
+    res.status(200).json(settingsData);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch settings' });
+  }
 });
 
 // ==========================================
