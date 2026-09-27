@@ -3,6 +3,29 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
+const jwt = require('jsonwebtoken'); // 🟢 JWT ইমপোর্ট করা হলো
+
+// ==========================================
+// 🟢 ADDED: Firebase Admin for Push Notifications
+// ==========================================
+const admin = require('firebase-admin');
+// admin.initializeApp({ credential: admin.credential.cert(...) }); // ⚠️ Uncomment and configure your firebase service account here
+
+async function sendPushNotification(topicOrToken, title, body, type) {
+  try {
+    if (!topicOrToken) return;
+    const safeTopic = topicOrToken.replace(/[^a-zA-Z0-9-_.~%]+/g, '_'); // Safety for Firebase topic rules
+    const message = {
+      notification: { title, body },
+      data: { type: type || 'alert' },
+      topic: safeTopic
+    };
+    await admin.messaging().send(message);
+    console.log(`Push sent to ${safeTopic}: ${title}`);
+  } catch (e) {
+    console.log("Push Notification Error:", e.message);
+  }
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -13,6 +36,30 @@ const server = http.createServer(app);
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// ==========================================
+// 🟢 JWT Authentication Middleware
+// ==========================================
+const JWT_SECRET = process.env.JWT_SECRET || "my_super_secret_key_2026";
+
+const verifyToken = (req, res, next) => {
+    // হেডার থেকে টোকেন বের করা
+    const authHeader = req.headers['authorization'];
+    if (!authHeader) {
+        return res.status(403).json({ error: "Access Denied! No token provided." });
+    }
+
+    const token = authHeader.split(' ')[1]; // 'Bearer TOKEN' থেকে শুধু টোকেনটা নেওয়া
+
+    try {
+        // টোকেন যাচাই করা
+        const verified = jwt.verify(token, JWT_SECRET);
+        req.user = verified; // ভেরিফাইড ইউজারের ডেটা req.user এ সেভ করা
+        next(); // টোকেন সঠিক হলে পরের ধাপে (API logic) যেতে দেবে
+    } catch (err) {
+        res.status(401).json({ error: "Invalid or Expired Token!" });
+    }
+};
 
 // ==========================================
 // 🟢 2. MongoDB Cloud Connection
@@ -62,7 +109,7 @@ io.on('connection', (socket) => {
 // ==========================================
 // 🟢 4. Security & Encryption
 // ==========================================
-// 🔴 ম্যাজিক ফিক্স: আপনি ফ্লাটার থেকে এনক্রিপশন সরিয়ে দিয়েছেন, তাই সার্ভার থেকেও এনক্রিপশন ফাংশন সম্পূর্ণভাবে মুছে দেওয়া হলো!
+// 🔴 ম্যাজিক ফিক্স: আপনি ফ্লাটার থেকে এনক্রিপশন সরিয়ে দিয়েছেন, তাই সার্ভার থেকেও এনক্রিপশন ফাংশন সম্পূর্ণভাবে মুছে দেওয়া হলো!
 // এতে প্রোফাইলে আধার বা ফাদার নেম আর ফাঁকা দেখাবে না।
 
 // ==========================================
@@ -90,6 +137,7 @@ const Teacher = mongoose.models.Teacher || mongoose.model('Teacher', teacherSche
 // ==========================================
 const DeveloperSettings = getDynamicModel('developer_settings');
 
+// 🟢 গ্লোবাল সেটিংস পেতে টোকেন ভেরিফাই করার দরকার নেই (Public)
 app.get('/api/developer_settings/global', async (req, res) => {
   try {
     let settings = await DeveloperSettings.findOne({ docId: 'global' });
@@ -101,17 +149,28 @@ app.get('/api/developer_settings/global', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.patch('/api/developer_settings/global', async (req, res) => {
+// 🟢 গ্লোবাল সেটিংস আপডেট করতে অবশ্যই ভেরিফাই করতে হবে
+app.patch('/api/developer_settings/global', verifyToken, async (req, res) => {
   try {
     const updated = await DeveloperSettings.findOneAndUpdate(
       { docId: 'global' }, { $set: req.body }, { new: true, upsert: true }
     );
     io.emit('global_settings_updated', updated); 
+
+    // 🟢 ADDED FOR NOTIFICATION: Global Notice and Global Coupon
+    if (req.body.developerNotice && req.body.developerNotice.isActive) {
+      sendPushNotification("all_users", "Important System Notice 🚀", req.body.developerNotice.text, "global_notice");
+    }
+    if (req.body.globalCoupons || req.body.milestoneCoupons) {
+      sendPushNotification("all_admins", "New Special Offer! 🎁", "A new discount coupon is available. Check your Rewards section now!", "coupon");
+    }
+
     res.json(updated || {});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
 // 🟢 Settings ফোল্ডার থেকে ডেটা ফেচ করার API
-app.get('/api/settings', async (req, res) => {
+app.get('/api/settings', verifyToken, async (req, res) => {
   try {
     // 🟢 ম্যাজিক ফিক্স: আপনার তৈরি করা ডাইনামিক মডেল ব্যবহার করা হলো (db error হবে না)
     const SettingsModel = getDynamicModel('settings');
@@ -126,14 +185,14 @@ app.get('/api/settings', async (req, res) => {
 // 🟢 7. ADMIN & USER CHECKING
 // ==========================================
 
-app.get('/api/users', async (req, res) => {
+app.get('/api/users', verifyToken, async (req, res) => {
   try {
     const users = await School.find(req.query);
     res.status(200).json(users);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/users/:uid', async (req, res) => {
+app.get('/api/users/:uid', verifyToken, async (req, res) => {
   try {
     let school = await School.findOne({ uid: req.params.uid });
     if (!school) {
@@ -179,11 +238,11 @@ async function calculateReadableEndDate(uid, updateData) {
   return updateData.end_date;
 }
 
-app.put('/api/users/:uid', async (req, res) => {
+app.put('/api/users/:uid', verifyToken, async (req, res) => {
   try {
     let updateData = { ...req.body };
     
-    // 🟢 ম্যাজিক ফিক্স: রেজিস্ট্রেশনের সময় uid যেন ১০০% সেভ হয় তার গ্যারান্টি!
+    // 🟢 ম্যাজিক ফিক্স: রেজিস্ট্রেশনের সময় uid যেন ১০০% সেভ হয় তার গ্যারান্টি!
     updateData.uid = req.params.uid;
 
     if (updateData.end_date || updateData.currentPlan) {
@@ -198,11 +257,19 @@ app.put('/api/users/:uid', async (req, res) => {
     
     io.to(req.params.uid).emit('data_updated', { type: 'school_data' });
     io.emit('user_plan_updated', updated); 
+
+    // 🟢 ADDED FOR NOTIFICATION: Admin Block / Unblock
+    if (updateData.isBlocked === true) {
+      sendPushNotification(req.params.uid, "Account Suspended 🚫", "Your account has been suspended by the Super Admin.", "alert");
+    } else if (updateData.isBlocked === false) {
+      sendPushNotification(req.params.uid, "Account Unblocked ✅", "Your account restrictions have been lifted.", "alert");
+    }
+
     res.json({ success: true, data: updated });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.patch('/api/users/:uid', async (req, res) => {
+app.patch('/api/users/:uid', verifyToken, async (req, res) => {
   try {
     let updateData = { ...req.body };
     
@@ -220,6 +287,14 @@ app.patch('/api/users/:uid', async (req, res) => {
     );
     io.to(req.params.uid).emit('data_updated', { type: 'school_data' });
     io.emit('user_plan_updated', updated); 
+
+    // 🟢 ADDED FOR NOTIFICATION: Admin Block / Unblock
+    if (updateData.isBlocked === true) {
+      sendPushNotification(req.params.uid, "Account Suspended 🚫", "Your account has been suspended by the Super Admin.", "alert");
+    } else if (updateData.isBlocked === false) {
+      sendPushNotification(req.params.uid, "Account Unblocked ✅", "Your account restrictions have been lifted.", "alert");
+    }
+
     res.json(updated);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -231,15 +306,14 @@ app.patch('/api/users/:uid', async (req, res) => {
 app.post('/api/login', async (req, res) => {
   try {
     const { role, schoolId, userId, password } = req.body;
+    let userData = null;
 
     if (role === "admin") {
       const school = await School.findOne({ uid: userId });
       if (!school) return res.status(404).json({ error: "Admin ID not found!" });
       if (password !== school.password) return res.status(400).json({ error: "Invalid Password!" });
-      return res.json({ success: true, data: school });
-    }
-
-    if (role === "student") {
+      userData = school;
+    } else if (role === "student") {
       const allStudents = await Student.find({ schoolId: schoolId });
       
       const student = allStudents.find(s => {
@@ -253,18 +327,23 @@ app.post('/api/login', async (req, res) => {
       if (student.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
       if (password !== student.password) return res.status(400).json({ error: "Invalid Password!" });
       
-      return res.json({ success: true, data: student });
-    }
-
-    if (role === "teacher") {
+      userData = student;
+    } else if (role === "teacher") {
       const teacher = await Teacher.findOne({ schoolId: schoolId, docId: userId });
       if (!teacher) return res.status(404).json({ error: "Teacher not found!" });
       if (teacher.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
       if (password !== teacher.password) return res.status(400).json({ error: "Invalid Password!" });
       
-      return res.json({ success: true, data: teacher });
+      userData = teacher;
+    } else {
+        return res.status(400).json({ error: "Invalid Role!" });
     }
-    res.status(400).json({ error: "Invalid Role!" });
+
+    // 🟢 লগইন সাকসেস হলে JWT টোকেন জেনারেট করে পাঠানো
+    const token = jwt.sign({ uid: userId, role: role, schoolId: schoolId }, JWT_SECRET, { expiresIn: '30d' }); // 30 দিন ভ্যালিডিটি
+
+    return res.json({ success: true, data: userData, token: token }); // 🟢 টোকেন রেসপন্সে অ্যাড করা হলো
+
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
@@ -290,8 +369,11 @@ app.post('/api/register', async (req, res) => {
     
     await newSchool.save();
 
+    // 🟢 রেজিস্ট্রেশন সাকসেস হলেও অটো লগইনের জন্য টোকেন দিয়ে দেওয়া হলো
+    const token = jwt.sign({ uid: uid, role: role || "admin", schoolId: uid }, JWT_SECRET, { expiresIn: '30d' });
+
     io.to(uid).emit('data_updated', { type: 'school_data' });
-    return res.status(201).json({ success: true, data: newSchool });
+    return res.status(201).json({ success: true, data: newSchool, token: token });
     
   } catch (error) { 
     console.error("Registration Error:", error);
@@ -303,7 +385,7 @@ app.post('/api/register', async (req, res) => {
 // ==========================================
 // 🟢 9. Dynamic Firebase-like Routing Engine
 // ==========================================
-app.get('/api/users/:uid/:collectionName', async (req, res) => {
+app.get('/api/users/:uid/:collectionName', verifyToken, async (req, res) => {
   try {
     const Model = getDynamicModel(req.params.collectionName);
     const filter = { schoolId: req.params.uid, ...req.query };
@@ -318,7 +400,7 @@ app.get('/api/users/:uid/:collectionName', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/users/:uid/:collectionName', async (req, res) => {
+app.post('/api/users/:uid/:collectionName', verifyToken, async (req, res) => {
   try {
     const Model = getDynamicModel(req.params.collectionName);
     let dataToSave = { ...req.body, schoolId: req.params.uid };
@@ -331,12 +413,26 @@ app.post('/api/users/:uid/:collectionName', async (req, res) => {
     }
 
     io.to(req.params.uid).emit('data_updated', { type: req.params.collectionName });
+
+    // 🟢 ADDED FOR NOTIFICATION: Universal POST (Homework, Doubts, Admin Request)
+    if (req.params.collectionName === 'homework') {
+      let topicClass = req.body.className ? req.body.className.replace(/\s+/g, '_') : 'all';
+      sendPushNotification(`class_${topicClass}`, "New Homework Assigned 📚", `Homework assigned for ${req.body.subject || 'your class'}. Check the app!`, "homework");
+    }
+    if (req.params.collectionName === 'doubts') {
+      let target = req.body.targetTeacherId || req.body.studentRoll;
+      if (target) sendPushNotification(target, "New Query/Doubt Received ❓", "You have received a new message regarding a doubt.", "doubt");
+    }
+    if (['pending_students', 'pending_payments', 'teacher_attendance_requests'].includes(req.params.collectionName)) {
+      sendPushNotification(req.params.uid, "New Request Received 🔔", "A teacher has submitted a new request for approval.", "admin_request");
+    }
+
     res.status(201).json({ success: true, id: newDoc._id.toString() });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.route('/api/users/:uid/:collectionName/:docId')
-  .get(async (req, res) => {
+  .get(verifyToken, async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
       let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
@@ -349,7 +445,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
       else res.status(404).json({ error: "Not Found" });
     } catch (err) { res.status(500).json({ error: err.message }); }
   })
-  .put(async (req, res) => {
+  .put(verifyToken, async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
       let updateData = { ...req.body, schoolId: req.params.uid, docId: req.params.docId };
@@ -364,10 +460,16 @@ app.route('/api/users/:uid/:collectionName/:docId')
       );
       
       io.to(req.params.uid).emit('data_updated', { type: req.params.collectionName });
+
+      // 🟢 ADDED FOR NOTIFICATION: User unlocks a coupon
+      if (req.params.collectionName === 'my_coupons' && req.body.code) {
+        sendPushNotification(req.params.uid, "Coupon Unlocked! 🎉", `You've successfully unlocked a ${req.body.discount}% discount coupon. Check your rewards!`, "coupon_unlocked");
+      }
+
       res.json(updated);
     } catch (err) { res.status(500).json({ error: err.message }); }
   })
-  .patch(async (req, res) => {
+  .patch(verifyToken, async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
       let updateQuery = { $set: {} };
@@ -417,10 +519,37 @@ app.route('/api/users/:uid/:collectionName/:docId')
       );
       
       io.to(req.params.uid).emit('data_updated', { type: req.params.collectionName });
+
+      // 🟢 ADDED FOR NOTIFICATION: Universal Actions (Holidays, Approvals, Attendance, Fees)
+      if (req.params.collectionName === 'settings' && req.params.docId === 'holiday_calendar') {
+         const dateKeys = Object.keys(req.body);
+         if(dateKeys.length > 0) {
+           sendPushNotification("all_users", "Holiday Declared 🏖️", `A new holiday has been declared on ${dateKeys[0]}.`, "holiday"); 
+         }
+      }
+      if (req.body.status === 'Approved' || req.body.status === 'Approved ✅') {
+         if (req.body.teacherId) sendPushNotification(req.body.teacherId, "Request Approved ✅", "Your request has been approved by the Admin.", "approval");
+         if (req.body.studentRoll) sendPushNotification(req.body.studentRoll, "Update Successful 🎉", "Your profile/fees have been updated successfully.", "student_update");
+      }
+      if (req.body.status === 'Rejected' || req.body.status === 'Rejected ❌') {
+         if (req.body.teacherId) sendPushNotification(req.body.teacherId, "Request Rejected ❌", "Your request was declined by the Admin.", "rejection");
+      }
+      if (req.params.collectionName === 'call_requests' && req.body.status === 'Scheduled') {
+         if (updated && updated.studentId) sendPushNotification(updated.studentId, "Call Scheduled ⏰", `Your call request has been scheduled for ${req.body.scheduledTime}.`, "call_update");
+      }
+      if (req.params.collectionName === 'students' && req.body.attendance) {
+         let roll = req.params.docId.replace('student_', '');
+         sendPushNotification(roll, "Attendance Update 📅", "Your attendance has been updated. Please check your dashboard.", "attendance");
+      }
+      if (req.params.collectionName === 'students' && req.body.feeHistory) {
+         let roll = req.params.docId.replace('student_', '');
+         sendPushNotification(roll, "Payment Received 💰", "Your fee payment has been successfully recorded. Thank you!", "fees");
+      }
+
       res.json(updated || {});
     } catch (err) { res.status(500).json({ error: err.message }); }
   })
-  .delete(async (req, res) => {
+  .delete(verifyToken, async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
       let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
@@ -449,7 +578,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-app.delete('/api/users/:uid/:collectionName', async (req, res) => {
+app.delete('/api/users/:uid/:collectionName', verifyToken, async (req, res) => {
   try {
     if (req.params.collectionName === 'homework' && req.query.subject && req.query.className) {
       const Model = getDynamicModel('homework');
@@ -475,30 +604,37 @@ app.delete('/api/users/:uid/:collectionName', async (req, res) => {
 // ==========================================
 const ActiveRoom = getDynamicModel('active_rooms');
 
-app.post('/api/active_rooms', async (req, res) => {
+app.post('/api/active_rooms', verifyToken, async (req, res) => {
   try {
     const newRoom = new ActiveRoom({ ...req.body, docId: req.body.roomId });
     await newRoom.save();
     io.emit('room_updated', newRoom.docId);
+
+    // 🟢 ADDED FOR NOTIFICATION: New Exam Room Created
+    if (req.body.status === 'setup' && req.body.className) {
+      let topicClass = req.body.className.replace(/\s+/g, '_');
+      sendPushNotification(`class_${topicClass}`, "New Live Exam Scheduled 📝", `An exam room (${req.body.roomId}) has been created for your class. Be prepared!`, "exam");
+    }
+
     res.status(201).json({ success: true, id: newRoom.docId });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/active_rooms', async (req, res) => {
+app.get('/api/active_rooms', verifyToken, async (req, res) => {
   try {
     const rooms = await ActiveRoom.find(req.query);
     res.json(rooms.map(r => ({ id: r.docId, ...r._doc })));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/active_rooms/:roomId', async (req, res) => {
+app.get('/api/active_rooms/:roomId', verifyToken, async (req, res) => {
   try {
     const room = await ActiveRoom.findOne({ docId: req.params.roomId });
     if(room) res.json(room); else res.status(404).json({ error: "Room not found" });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.patch('/api/active_rooms/:roomId', async (req, res) => {
+app.patch('/api/active_rooms/:roomId', verifyToken, async (req, res) => {
   try {
     const updated = await ActiveRoom.findOneAndUpdate({ docId: req.params.roomId }, { $set: req.body }, { new: true, upsert: true });
     io.emit('room_updated', req.params.roomId);
@@ -506,7 +642,7 @@ app.patch('/api/active_rooms/:roomId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/active_rooms/:roomId', async (req, res) => {
+app.delete('/api/active_rooms/:roomId', verifyToken, async (req, res) => {
   try {
     await ActiveRoom.findOneAndDelete({ docId: req.params.roomId });
     io.emit('room_updated', req.params.roomId);
@@ -514,7 +650,7 @@ app.delete('/api/active_rooms/:roomId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/active_rooms/:roomId/:subCollection', async (req, res) => {
+app.get('/api/active_rooms/:roomId/:subCollection', verifyToken, async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const data = await Model.find(req.query);
@@ -522,7 +658,7 @@ app.get('/api/active_rooms/:roomId/:subCollection', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
+app.get('/api/active_rooms/:roomId/:subCollection/:subDocId', verifyToken, async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const data = await Model.findOne({ docId: req.params.subDocId });
@@ -530,17 +666,23 @@ app.get('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) =
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/active_rooms/:roomId/:subCollection', async (req, res) => {
+app.post('/api/active_rooms/:roomId/:subCollection', verifyToken, async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const newDoc = new Model({ ...req.body, docId: req.body.id || req.body.roomId });
     await newDoc.save();
     io.emit('room_sub_updated', req.params.roomId);
+
+    // 🟢 ADDED FOR NOTIFICATION: Chat Message
+    if (req.params.subCollection === 'chat') {
+      sendPushNotification(`room_${req.params.roomId}`, `New Message from ${req.body.senderName || 'Participant'} 💬`, req.body.message || "New message received in the room.", "chat");
+    }
+
     res.status(201).json({ success: true, id: newDoc._id.toString() });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
+app.put('/api/active_rooms/:roomId/:subCollection/:subDocId', verifyToken, async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const updated = await Model.findOneAndUpdate({ docId: req.params.subDocId }, { ...req.body, docId: req.params.subDocId }, { new: true, upsert: true });
@@ -549,7 +691,7 @@ app.put('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) =
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.patch('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
+app.patch('/api/active_rooms/:roomId/:subCollection/:subDocId', verifyToken, async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const updated = await Model.findOneAndUpdate({ docId: req.params.subDocId }, { $set: req.body }, { new: true, upsert: true });
@@ -558,7 +700,7 @@ app.patch('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res)
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
+app.delete('/api/active_rooms/:roomId/:subCollection/:subDocId', verifyToken, async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     await Model.findOneAndDelete({ docId: req.params.subDocId });
@@ -572,23 +714,32 @@ app.delete('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res
 // 🟢 11. Global Developer Feedbacks
 // ==========================================
 const Feedback = getDynamicModel('developer_feedbacks');
-app.get('/api/developer_feedbacks', async (req, res) => {
+app.get('/api/developer_feedbacks', verifyToken, async (req, res) => {
   try {
     const feedbacks = await Feedback.find(req.query);
     res.json(feedbacks.map(f => ({ id: f._id.toString(), ...f._doc })));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-app.post('/api/developer_feedbacks', async (req, res) => {
+app.post('/api/developer_feedbacks', verifyToken, async (req, res) => {
   try {
     const f = new Feedback(req.body); await f.save(); res.json({ id: f._id.toString() });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-app.patch('/api/developer_feedbacks/:id', async (req, res) => {
+app.patch('/api/developer_feedbacks/:id', verifyToken, async (req, res) => {
   try {
-    const updated = await Feedback.findByIdAndUpdate(req.params.id, { $set: req.body }, { new: true }); res.json(updated);
+    const updated = await Feedback.findByIdAndUpdate(req.params.id, { $set: req.body }, { new: true }); 
+
+    // 🟢 ADDED FOR NOTIFICATION: Feedback Approved / Rejected
+    if (updated && req.body.status === 'Approved') {
+      sendPushNotification(updated.senderId, "Feedback Accepted! 🎉", "Your valuable feedback has been approved by the Developer.", "feedback");
+    } else if (updated && req.body.status === 'Rejected') {
+      sendPushNotification(updated.senderId, "Feedback Update", "Your suggestion was reviewed but could not be implemented right now.", "feedback");
+    }
+
+    res.json(updated);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-app.delete('/api/developer_feedbacks/:id', async (req, res) => {
+app.delete('/api/developer_feedbacks/:id', verifyToken, async (req, res) => {
   try { await Feedback.findByIdAndDelete(req.params.id); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -666,7 +817,7 @@ setInterval(async () => {
 // ==========================================
 // 🟢 13. WIPE SESSION DATA (NEW YEAR SETUP)
 // ==========================================
-app.delete('/api/users/:uid/wipe_session_data', async (req, res) => {
+app.delete('/api/users/:uid/wipe_session_data', verifyToken, async (req, res) => {
   try {
     const uid = req.params.uid;
     const clearLedger = req.query.clearLedger === 'true';
@@ -717,7 +868,7 @@ app.delete('/api/users/:uid/wipe_session_data', async (req, res) => {
 // ==========================================
 // 🟢 14. ADMIN SUBSCRIPTION PAYMENT HISTORY
 // ==========================================
-app.post('/api/users/:uid/subscription_payment', async (req, res) => {
+app.post('/api/users/:uid/subscription_payment', verifyToken, async (req, res) => {
   try {
     const Model = getDynamicModel('subscription_payments');
     
@@ -738,7 +889,7 @@ app.post('/api/users/:uid/subscription_payment', async (req, res) => {
   }
 });
 
-app.get('/api/users/:uid/subscription_payment', async (req, res) => {
+app.get('/api/users/:uid/subscription_payment', verifyToken, async (req, res) => {
   try {
     const Model = getDynamicModel('subscription_payments');
     const data = await Model.find({ schoolId: req.params.uid, ...req.query }).sort({ timestamp: -1 });
@@ -750,6 +901,44 @@ app.get('/api/users/:uid/subscription_payment', async (req, res) => {
   }
 });
 
+// ==========================================
+// 🟢 15. AUTOMATIC NOTIFICATIONS (EXPIRY & DUES)
+// ==========================================
+setInterval(async () => {
+  try {
+    const now = Date.now();
+    const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+
+    // 1. Subscription Expiry Check (3 Days Warning for Admins)
+    const schools = await School.find({ role: 'admin' });
+    for (let school of schools) {
+      if (school.end_date) {
+        let expiryTime = new Date(school.end_date).getTime();
+        let timeLeft = expiryTime - now;
+        
+        // If exactly between 2 to 3 days left
+        if (timeLeft > (threeDaysMs - 86400000) && timeLeft <= threeDaysMs) {
+          sendPushNotification(school.uid, "Subscription Expiring Soon ⚠️", "Your plan will expire in 3 days. Please renew to keep using all features smoothly.", "subscription");
+        }
+      }
+    }
+
+    // 2. Weekly Due Fees Reminder (Only on Sundays)
+    if (new Date().getDay() === 0) { // 0 = Sunday
+      const students = await Student.find({});
+      for (let s of students) {
+         if (s.dueAmount && s.dueAmount > 0) {
+           let rollTopic = s.roll || (s.docId ? s.docId.replace('student_', '') : null);
+           if (rollTopic) {
+             sendPushNotification(rollTopic, "Fee Due Reminder 💳", `Dear ${s.name || 'Student'}, you have a pending fee of ₹${s.dueAmount}. Please clear your dues at the earliest.`, "fees");
+           }
+         }
+      }
+    }
+  } catch (error) {
+    console.error("Auto Notification Error:", error.message);
+  }
+}, 24 * 60 * 60 * 1000); // Runs once every 24 hours
 
 // ==========================================
 // 🟢 Server Start
