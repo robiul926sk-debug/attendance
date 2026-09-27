@@ -4,6 +4,7 @@ const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken'); // 🟢 JWT ইমপোর্ট করা হলো
+const bcrypt = require('bcrypt'); // 🟢 পাসওয়ার্ড এনক্রিপ্ট করার জন্য Bcrypt ইমপোর্ট করা হলো
 
 // ==========================================
 // 🟢 ADDED: Firebase Admin for Push Notifications
@@ -172,7 +173,7 @@ app.patch('/api/developer_settings/global', verifyToken, async (req, res) => {
 // 🟢 Settings ফোল্ডার থেকে ডেটা ফেচ করার API
 app.get('/api/settings', verifyToken, async (req, res) => {
   try {
-    // 🟢 ম্যাজিক ফিক্স: আপনার তৈরি করা ডাইনামিক মডেল ব্যবহার করা হলো (db error হবে না)
+    // 🟢 ম্যাজিক ফিক্স: আপনার তৈরি করা ডাইনামিক মডেল ব্যবহার করা হলো (db error হবেবিধা না)
     const SettingsModel = getDynamicModel('settings');
     const settingsData = await SettingsModel.find({});
     res.status(200).json(settingsData);
@@ -307,12 +308,13 @@ app.post('/api/login', async (req, res) => {
   try {
     const { role, schoolId, userId, password } = req.body;
     let userData = null;
+    let dbPassword = null; // ডাটাবেসের সেভ করা পাসওয়ার্ড রাখার জন্য
 
     if (role === "admin") {
       const school = await School.findOne({ uid: userId });
       if (!school) return res.status(404).json({ error: "Admin ID not found!" });
-      if (password !== school.password) return res.status(400).json({ error: "Invalid Password!" });
       userData = school;
+      dbPassword = school.password;
     } else if (role === "student") {
       const allStudents = await Student.find({ schoolId: schoolId });
       
@@ -325,18 +327,31 @@ app.post('/api/login', async (req, res) => {
 
       if (!student) return res.status(404).json({ error: "Student ID not found! Check Name and Roll." });
       if (student.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
-      if (password !== student.password) return res.status(400).json({ error: "Invalid Password!" });
-      
       userData = student;
+      dbPassword = student.password;
     } else if (role === "teacher") {
       const teacher = await Teacher.findOne({ schoolId: schoolId, docId: userId });
       if (!teacher) return res.status(404).json({ error: "Teacher not found!" });
       if (teacher.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
-      if (password !== teacher.password) return res.status(400).json({ error: "Invalid Password!" });
-      
       userData = teacher;
+      dbPassword = teacher.password;
     } else {
         return res.status(400).json({ error: "Invalid Role!" });
+    }
+
+    // 🟢 পাসওয়ার্ড চেক করা হচ্ছে (প্রথমে Bcrypt, তারপর পুরোনো ইউজারদের জন্য নরমাল টেক্সট)
+    let validPassword = false;
+    try {
+      validPassword = await bcrypt.compare(password, dbPassword);
+    } catch (e) {
+      validPassword = false;
+    }
+
+    // যদি bcrypt দিয়ে না মেলে, তবে পুরোনো সিস্টেমের প্লেইন টেক্সট চেক করবে
+    if (!validPassword) {
+       if (password !== dbPassword) {
+          return res.status(400).json({ error: "Invalid Password!" });
+       }
     }
 
     // 🟢 লগইন সাকসেস হলে JWT টোকেন জেনারেট করে পাঠানো
@@ -359,17 +374,24 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ error: "School already registered with this UID." });
     }
 
+    // 🟢 পাসওয়ার্ড এনক্রিপ্ট (Hash) করা হচ্ছে শুধুমাত্র পাসওয়ার্ডের ফিল্ডে
+    let hashedPassword = password;
+    if (password) {
+      const salt = await bcrypt.genSalt(10);
+      hashedPassword = await bcrypt.hash(password, salt);
+    }
+
     const newSchool = new School({ 
       uid: uid, 
       email: email, 
-      password: password, 
+      password: hashedPassword, // 🟢 এনক্রিপ্টেড পাসওয়ার্ড সেভ করা হলো
       role: role || "admin", 
       ...otherData 
     });
     
     await newSchool.save();
 
-    // 🟢 রেজিস্ট্রেশন সাকসেস হলেও অটো লগইনের জন্য টোকেন দিয়ে দেওয়া হলো
+    // 🟢 রেজিস্ট্রেশন সাকসেস হলেও অটো লগইনের জন্য টোকেন দিয়ে দেওয়া হলো
     const token = jwt.sign({ uid: uid, role: role || "admin", schoolId: uid }, JWT_SECRET, { expiresIn: '30d' });
 
     io.to(uid).emit('data_updated', { type: 'school_data' });
@@ -405,6 +427,12 @@ app.post('/api/users/:uid/:collectionName', verifyToken, async (req, res) => {
     const Model = getDynamicModel(req.params.collectionName);
     let dataToSave = { ...req.body, schoolId: req.params.uid };
     
+    // 🟢 Student বা Teacher অ্যাড করার সময় পাসওয়ার্ড এনক্রিপ্ট করা হচ্ছে
+    if ((req.params.collectionName === 'students' || req.params.collectionName === 'teachers') && dataToSave.password) {
+      const salt = await bcrypt.genSalt(10);
+      dataToSave.password = await bcrypt.hash(dataToSave.password, salt);
+    }
+
     const newDoc = new Model(dataToSave);
     await newDoc.save();
     
