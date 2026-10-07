@@ -20,5 +20,10 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.9.2",
     "socket.io": "^4.8.3"
+  },
+  "allowScripts": {
+    "@firebase/util@1.15.3": true,
+    "bcrypt@6.0.0": true,
+    "protobufjs@7.6.6": true
   }
 }
