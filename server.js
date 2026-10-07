@@ -186,24 +186,39 @@ app.get('/api/settings', verifyToken, async (req, res) => {
 // 🟢 7. ADMIN & USER CHECKING
 // ==========================================
 
+// 🟢 নতুন অ্যাডমিন/স্কুল তৈরি করার জন্য POST মেথড যোগ করা হলো
+app.post('/api/users', async (req, res) => {
+  try {
+    let updateData = { ...req.body };
+    
+    if (!updateData.uid) {
+       return res.status(400).json({ error: "UID is required" });
+    }
+
+    if (updateData.end_date || updateData.currentPlan) {
+      updateData.end_date = await calculateReadableEndDate(updateData.uid, updateData);
+    }
+
+    // 🟢 নতুন ডেটা সেভ করা হবে
+    const newSchool = new School(updateData);
+    await newSchool.save();
+    
+    // 🟢 নতুন ইউজার তৈরি হওয়ার পর একটি টোকেন জেনারেট করে পাঠিয়ে দেওয়া হলো
+    const token = jwt.sign({ uid: updateData.uid, role: updateData.role || "admin", schoolId: updateData.uid }, JWT_SECRET, { expiresIn: '30d' });
+
+    io.to(updateData.uid).emit('data_updated', { type: 'school_data' });
+    io.emit('user_plan_updated', newSchool); 
+
+    res.status(201).json({ success: true, data: newSchool, token: token });
+  } catch (err) { 
+    res.status(500).json({ error: err.message }); 
+  }
+});
+
 app.get('/api/users', verifyToken, async (req, res) => {
   try {
     const users = await School.find(req.query);
     res.status(200).json(users);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get('/api/users/:uid', verifyToken, async (req, res) => {
-  try {
-    let school = await School.findOne({ uid: req.params.uid });
-    if (!school) {
-      school = await School.findById(req.params.uid);
-    }
-    if (school) {
-      res.status(200).json(school);
-    } else {
-      res.status(404).json({ message: "User not found" });
-    }
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
