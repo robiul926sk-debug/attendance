@@ -3,8 +3,6 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
-const jwt = require('jsonwebtoken'); // 🟢 JWT ইমপোর্ট করা হলো
-const bcrypt = require('bcrypt'); // 🟢 পাসওয়ার্ড এনক্রিপ্ট করার জন্য Bcrypt ইমপোর্ট করা হলো
 
 // ==========================================
 // 🟢 ADDED: Firebase Admin for Push Notifications
@@ -37,30 +35,6 @@ const server = http.createServer(app);
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
-
-// ==========================================
-// 🟢 JWT Authentication Middleware
-// ==========================================
-const JWT_SECRET = process.env.JWT_SECRET || "my_super_secret_key_2026";
-
-const verifyToken = (req, res, next) => {
-    // হেডার থেকে টোকেন বের করা
-    const authHeader = req.headers['authorization'];
-    if (!authHeader) {
-        return res.status(403).json({ error: "Access Denied! No token provided." });
-    }
-
-    const token = authHeader.split(' ')[1]; // 'Bearer TOKEN' থেকে শুধু টোকেনটা নেওয়া
-
-    try {
-        // টোকেন যাচাই করা
-        const verified = jwt.verify(token, JWT_SECRET);
-        req.user = verified; // ভেরিফাইড ইউজারের ডেটা req.user এ সেভ করা
-        next(); // টোকেন সঠিক হলে পরের ধাপে (API logic) যেতে দেবে
-    } catch (err) {
-        res.status(401).json({ error: "Invalid or Expired Token!" });
-    }
-};
 
 // ==========================================
 // 🟢 2. MongoDB Cloud Connection
@@ -138,7 +112,6 @@ const Teacher = mongoose.models.Teacher || mongoose.model('Teacher', teacherSche
 // ==========================================
 const DeveloperSettings = getDynamicModel('developer_settings');
 
-// 🟢 গ্লোবাল সেটিংস পেতে টোকেন ভেরিফাই করার দরকার নেই (Public)
 app.get('/api/developer_settings/global', async (req, res) => {
   try {
     let settings = await DeveloperSettings.findOne({ docId: 'global' });
@@ -150,8 +123,7 @@ app.get('/api/developer_settings/global', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🟢 গ্লোবাল সেটিংস আপডেট করতে অবশ্যই ভেরিফাই করতে হবে
-app.patch('/api/developer_settings/global', verifyToken, async (req, res) => {
+app.patch('/api/developer_settings/global', async (req, res) => {
   try {
     const updated = await DeveloperSettings.findOneAndUpdate(
       { docId: 'global' }, { $set: req.body }, { new: true, upsert: true }
@@ -171,9 +143,9 @@ app.patch('/api/developer_settings/global', verifyToken, async (req, res) => {
 });
 
 // 🟢 Settings ফোল্ডার থেকে ডেটা ফেচ করার API
-app.get('/api/settings', verifyToken, async (req, res) => {
+app.get('/api/settings', async (req, res) => {
   try {
-    // 🟢 ম্যাজিক ফিক্স: আপনার তৈরি করা ডাইনামিক মডেল ব্যবহার করা হলো (db error হবেবিধা না)
+    // 🟢 ম্যাজিক ফিক্স: আপনার তৈরি করা ডাইনামিক মডেল ব্যবহার করা হলো (db error হবে না)
     const SettingsModel = getDynamicModel('settings');
     const settingsData = await SettingsModel.find({});
     res.status(200).json(settingsData);
@@ -186,39 +158,24 @@ app.get('/api/settings', verifyToken, async (req, res) => {
 // 🟢 7. ADMIN & USER CHECKING
 // ==========================================
 
-// 🟢 নতুন অ্যাডমিন/স্কুল তৈরি করার জন্য POST মেথড যোগ করা হলো
-app.post('/api/users', async (req, res) => {
-  try {
-    let updateData = { ...req.body };
-    
-    if (!updateData.uid) {
-       return res.status(400).json({ error: "UID is required" });
-    }
-
-    if (updateData.end_date || updateData.currentPlan) {
-      updateData.end_date = await calculateReadableEndDate(updateData.uid, updateData);
-    }
-
-    // 🟢 নতুন ডেটা সেভ করা হবে
-    const newSchool = new School(updateData);
-    await newSchool.save();
-    
-    // 🟢 নতুন ইউজার তৈরি হওয়ার পর একটি টোকেন জেনারেট করে পাঠিয়ে দেওয়া হলো
-    const token = jwt.sign({ uid: updateData.uid, role: updateData.role || "admin", schoolId: updateData.uid }, JWT_SECRET, { expiresIn: '30d' });
-
-    io.to(updateData.uid).emit('data_updated', { type: 'school_data' });
-    io.emit('user_plan_updated', newSchool); 
-
-    res.status(201).json({ success: true, data: newSchool, token: token });
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
-});
-
-app.get('/api/users', verifyToken, async (req, res) => {
+app.get('/api/users', async (req, res) => {
   try {
     const users = await School.find(req.query);
     res.status(200).json(users);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/users/:uid', async (req, res) => {
+  try {
+    let school = await School.findOne({ uid: req.params.uid });
+    if (!school) {
+      school = await School.findById(req.params.uid);
+    }
+    if (school) {
+      res.status(200).json(school);
+    } else {
+      res.status(404).json({ message: "User not found" });
+    }
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -254,7 +211,7 @@ async function calculateReadableEndDate(uid, updateData) {
   return updateData.end_date;
 }
 
-app.put('/api/users/:uid', verifyToken, async (req, res) => {
+app.put('/api/users/:uid', async (req, res) => {
   try {
     let updateData = { ...req.body };
     
@@ -285,7 +242,7 @@ app.put('/api/users/:uid', verifyToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.patch('/api/users/:uid', verifyToken, async (req, res) => {
+app.patch('/api/users/:uid', async (req, res) => {
   try {
     let updateData = { ...req.body };
     
@@ -322,15 +279,15 @@ app.patch('/api/users/:uid', verifyToken, async (req, res) => {
 app.post('/api/login', async (req, res) => {
   try {
     const { role, schoolId, userId, password } = req.body;
-    let userData = null;
-    let dbPassword = null; // ডাটাবেসের সেভ করা পাসওয়ার্ড রাখার জন্য
 
     if (role === "admin") {
       const school = await School.findOne({ uid: userId });
       if (!school) return res.status(404).json({ error: "Admin ID not found!" });
-      userData = school;
-      dbPassword = school.password;
-    } else if (role === "student") {
+      if (password !== school.password) return res.status(400).json({ error: "Invalid Password!" });
+      return res.json({ success: true, data: school });
+    }
+
+    if (role === "student") {
       const allStudents = await Student.find({ schoolId: schoolId });
       
       const student = allStudents.find(s => {
@@ -342,38 +299,20 @@ app.post('/api/login', async (req, res) => {
 
       if (!student) return res.status(404).json({ error: "Student ID not found! Check Name and Roll." });
       if (student.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
-      userData = student;
-      dbPassword = student.password;
-    } else if (role === "teacher") {
+      if (password !== student.password) return res.status(400).json({ error: "Invalid Password!" });
+      
+      return res.json({ success: true, data: student });
+    }
+
+    if (role === "teacher") {
       const teacher = await Teacher.findOne({ schoolId: schoolId, docId: userId });
       if (!teacher) return res.status(404).json({ error: "Teacher not found!" });
       if (teacher.loginEnabled === false) return res.status(403).json({ error: "Login disabled by Admin." });
-      userData = teacher;
-      dbPassword = teacher.password;
-    } else {
-        return res.status(400).json({ error: "Invalid Role!" });
+      if (password !== teacher.password) return res.status(400).json({ error: "Invalid Password!" });
+      
+      return res.json({ success: true, data: teacher });
     }
-
-    // 🟢 পাসওয়ার্ড চেক করা হচ্ছে (প্রথমে Bcrypt, তারপর পুরোনো ইউজারদের জন্য নরমাল টেক্সট)
-    let validPassword = false;
-    try {
-      validPassword = await bcrypt.compare(password, dbPassword);
-    } catch (e) {
-      validPassword = false;
-    }
-
-    // যদি bcrypt দিয়ে না মেলে, তবে পুরোনো সিস্টেমের প্লেইন টেক্সট চেক করবে
-    if (!validPassword) {
-       if (password !== dbPassword) {
-          return res.status(400).json({ error: "Invalid Password!" });
-       }
-    }
-
-    // 🟢 লগইন সাকসেস হলে JWT টোকেন জেনারেট করে পাঠানো
-    const token = jwt.sign({ uid: userId, role: role, schoolId: schoolId }, JWT_SECRET, { expiresIn: '30d' }); // 30 দিন ভ্যালিডিটি
-
-    return res.json({ success: true, data: userData, token: token }); // 🟢 টোকেন রেসপন্সে অ্যাড করা হলো
-
+    res.status(400).json({ error: "Invalid Role!" });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
@@ -389,28 +328,18 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ error: "School already registered with this UID." });
     }
 
-    // 🟢 পাসওয়ার্ড এনক্রিপ্ট (Hash) করা হচ্ছে শুধুমাত্র পাসওয়ার্ডের ফিল্ডে
-    let hashedPassword = password;
-    if (password) {
-      const salt = await bcrypt.genSalt(10);
-      hashedPassword = await bcrypt.hash(password, salt);
-    }
-
     const newSchool = new School({ 
       uid: uid, 
       email: email, 
-      password: hashedPassword, // 🟢 এনক্রিপ্টেড পাসওয়ার্ড সেভ করা হলো
+      password: password, 
       role: role || "admin", 
       ...otherData 
     });
     
     await newSchool.save();
 
-    // 🟢 রেজিস্ট্রেশন সাকসেস হলেও অটো লগইনের জন্য টোকেন দিয়ে দেওয়া হলো
-    const token = jwt.sign({ uid: uid, role: role || "admin", schoolId: uid }, JWT_SECRET, { expiresIn: '30d' });
-
     io.to(uid).emit('data_updated', { type: 'school_data' });
-    return res.status(201).json({ success: true, data: newSchool, token: token });
+    return res.status(201).json({ success: true, data: newSchool });
     
   } catch (error) { 
     console.error("Registration Error:", error);
@@ -422,7 +351,7 @@ app.post('/api/register', async (req, res) => {
 // ==========================================
 // 🟢 9. Dynamic Firebase-like Routing Engine
 // ==========================================
-app.get('/api/users/:uid/:collectionName', verifyToken, async (req, res) => {
+app.get('/api/users/:uid/:collectionName', async (req, res) => {
   try {
     const Model = getDynamicModel(req.params.collectionName);
     const filter = { schoolId: req.params.uid, ...req.query };
@@ -437,17 +366,11 @@ app.get('/api/users/:uid/:collectionName', verifyToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/users/:uid/:collectionName', verifyToken, async (req, res) => {
+app.post('/api/users/:uid/:collectionName', async (req, res) => {
   try {
     const Model = getDynamicModel(req.params.collectionName);
     let dataToSave = { ...req.body, schoolId: req.params.uid };
     
-    // 🟢 Student বা Teacher অ্যাড করার সময় পাসওয়ার্ড এনক্রিপ্ট করা হচ্ছে
-    if ((req.params.collectionName === 'students' || req.params.collectionName === 'teachers') && dataToSave.password) {
-      const salt = await bcrypt.genSalt(10);
-      dataToSave.password = await bcrypt.hash(dataToSave.password, salt);
-    }
-
     const newDoc = new Model(dataToSave);
     await newDoc.save();
     
@@ -475,7 +398,7 @@ app.post('/api/users/:uid/:collectionName', verifyToken, async (req, res) => {
 });
 
 app.route('/api/users/:uid/:collectionName/:docId')
-  .get(verifyToken, async (req, res) => {
+  .get(async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
       let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
@@ -488,7 +411,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
       else res.status(404).json({ error: "Not Found" });
     } catch (err) { res.status(500).json({ error: err.message }); }
   })
-  .put(verifyToken, async (req, res) => {
+  .put(async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
       let updateData = { ...req.body, schoolId: req.params.uid, docId: req.params.docId };
@@ -512,7 +435,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
       res.json(updated);
     } catch (err) { res.status(500).json({ error: err.message }); }
   })
-  .patch(verifyToken, async (req, res) => {
+  .patch(async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
       let updateQuery = { $set: {} };
@@ -592,7 +515,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
       res.json(updated || {});
     } catch (err) { res.status(500).json({ error: err.message }); }
   })
-  .delete(verifyToken, async (req, res) => {
+  .delete(async (req, res) => {
     try {
       const Model = getDynamicModel(req.params.collectionName);
       let query = req.params.docId.length === 24 ? { _id: req.params.docId } : { schoolId: req.params.uid, docId: req.params.docId };
@@ -621,7 +544,7 @@ app.route('/api/users/:uid/:collectionName/:docId')
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-app.delete('/api/users/:uid/:collectionName', verifyToken, async (req, res) => {
+app.delete('/api/users/:uid/:collectionName', async (req, res) => {
   try {
     if (req.params.collectionName === 'homework' && req.query.subject && req.query.className) {
       const Model = getDynamicModel('homework');
@@ -647,7 +570,7 @@ app.delete('/api/users/:uid/:collectionName', verifyToken, async (req, res) => {
 // ==========================================
 const ActiveRoom = getDynamicModel('active_rooms');
 
-app.post('/api/active_rooms', verifyToken, async (req, res) => {
+app.post('/api/active_rooms', async (req, res) => {
   try {
     const newRoom = new ActiveRoom({ ...req.body, docId: req.body.roomId });
     await newRoom.save();
@@ -663,21 +586,21 @@ app.post('/api/active_rooms', verifyToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/active_rooms', verifyToken, async (req, res) => {
+app.get('/api/active_rooms', async (req, res) => {
   try {
     const rooms = await ActiveRoom.find(req.query);
     res.json(rooms.map(r => ({ id: r.docId, ...r._doc })));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/active_rooms/:roomId', verifyToken, async (req, res) => {
+app.get('/api/active_rooms/:roomId', async (req, res) => {
   try {
     const room = await ActiveRoom.findOne({ docId: req.params.roomId });
     if(room) res.json(room); else res.status(404).json({ error: "Room not found" });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.patch('/api/active_rooms/:roomId', verifyToken, async (req, res) => {
+app.patch('/api/active_rooms/:roomId', async (req, res) => {
   try {
     const updated = await ActiveRoom.findOneAndUpdate({ docId: req.params.roomId }, { $set: req.body }, { new: true, upsert: true });
     io.emit('room_updated', req.params.roomId);
@@ -685,7 +608,7 @@ app.patch('/api/active_rooms/:roomId', verifyToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/active_rooms/:roomId', verifyToken, async (req, res) => {
+app.delete('/api/active_rooms/:roomId', async (req, res) => {
   try {
     await ActiveRoom.findOneAndDelete({ docId: req.params.roomId });
     io.emit('room_updated', req.params.roomId);
@@ -693,7 +616,7 @@ app.delete('/api/active_rooms/:roomId', verifyToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/active_rooms/:roomId/:subCollection', verifyToken, async (req, res) => {
+app.get('/api/active_rooms/:roomId/:subCollection', async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const data = await Model.find(req.query);
@@ -701,7 +624,7 @@ app.get('/api/active_rooms/:roomId/:subCollection', verifyToken, async (req, res
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/active_rooms/:roomId/:subCollection/:subDocId', verifyToken, async (req, res) => {
+app.get('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const data = await Model.findOne({ docId: req.params.subDocId });
@@ -709,7 +632,7 @@ app.get('/api/active_rooms/:roomId/:subCollection/:subDocId', verifyToken, async
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/active_rooms/:roomId/:subCollection', verifyToken, async (req, res) => {
+app.post('/api/active_rooms/:roomId/:subCollection', async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const newDoc = new Model({ ...req.body, docId: req.body.id || req.body.roomId });
@@ -725,7 +648,7 @@ app.post('/api/active_rooms/:roomId/:subCollection', verifyToken, async (req, re
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/active_rooms/:roomId/:subCollection/:subDocId', verifyToken, async (req, res) => {
+app.put('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const updated = await Model.findOneAndUpdate({ docId: req.params.subDocId }, { ...req.body, docId: req.params.subDocId }, { new: true, upsert: true });
@@ -734,7 +657,7 @@ app.put('/api/active_rooms/:roomId/:subCollection/:subDocId', verifyToken, async
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.patch('/api/active_rooms/:roomId/:subCollection/:subDocId', verifyToken, async (req, res) => {
+app.patch('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     const updated = await Model.findOneAndUpdate({ docId: req.params.subDocId }, { $set: req.body }, { new: true, upsert: true });
@@ -743,7 +666,7 @@ app.patch('/api/active_rooms/:roomId/:subCollection/:subDocId', verifyToken, asy
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/active_rooms/:roomId/:subCollection/:subDocId', verifyToken, async (req, res) => {
+app.delete('/api/active_rooms/:roomId/:subCollection/:subDocId', async (req, res) => {
   try {
     const Model = getDynamicModel(`room_${req.params.roomId}_${req.params.subCollection}`);
     await Model.findOneAndDelete({ docId: req.params.subDocId });
@@ -757,18 +680,18 @@ app.delete('/api/active_rooms/:roomId/:subCollection/:subDocId', verifyToken, as
 // 🟢 11. Global Developer Feedbacks
 // ==========================================
 const Feedback = getDynamicModel('developer_feedbacks');
-app.get('/api/developer_feedbacks', verifyToken, async (req, res) => {
+app.get('/api/developer_feedbacks', async (req, res) => {
   try {
     const feedbacks = await Feedback.find(req.query);
     res.json(feedbacks.map(f => ({ id: f._id.toString(), ...f._doc })));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-app.post('/api/developer_feedbacks', verifyToken, async (req, res) => {
+app.post('/api/developer_feedbacks', async (req, res) => {
   try {
     const f = new Feedback(req.body); await f.save(); res.json({ id: f._id.toString() });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-app.patch('/api/developer_feedbacks/:id', verifyToken, async (req, res) => {
+app.patch('/api/developer_feedbacks/:id', async (req, res) => {
   try {
     const updated = await Feedback.findByIdAndUpdate(req.params.id, { $set: req.body }, { new: true }); 
 
@@ -782,7 +705,7 @@ app.patch('/api/developer_feedbacks/:id', verifyToken, async (req, res) => {
     res.json(updated);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-app.delete('/api/developer_feedbacks/:id', verifyToken, async (req, res) => {
+app.delete('/api/developer_feedbacks/:id', async (req, res) => {
   try { await Feedback.findByIdAndDelete(req.params.id); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -860,7 +783,7 @@ setInterval(async () => {
 // ==========================================
 // 🟢 13. WIPE SESSION DATA (NEW YEAR SETUP)
 // ==========================================
-app.delete('/api/users/:uid/wipe_session_data', verifyToken, async (req, res) => {
+app.delete('/api/users/:uid/wipe_session_data', async (req, res) => {
   try {
     const uid = req.params.uid;
     const clearLedger = req.query.clearLedger === 'true';
@@ -911,7 +834,7 @@ app.delete('/api/users/:uid/wipe_session_data', verifyToken, async (req, res) =>
 // ==========================================
 // 🟢 14. ADMIN SUBSCRIPTION PAYMENT HISTORY
 // ==========================================
-app.post('/api/users/:uid/subscription_payment', verifyToken, async (req, res) => {
+app.post('/api/users/:uid/subscription_payment', async (req, res) => {
   try {
     const Model = getDynamicModel('subscription_payments');
     
@@ -932,7 +855,7 @@ app.post('/api/users/:uid/subscription_payment', verifyToken, async (req, res) =
   }
 });
 
-app.get('/api/users/:uid/subscription_payment', verifyToken, async (req, res) => {
+app.get('/api/users/:uid/subscription_payment', async (req, res) => {
   try {
     const Model = getDynamicModel('subscription_payments');
     const data = await Model.find({ schoolId: req.params.uid, ...req.query }).sort({ timestamp: -1 });
